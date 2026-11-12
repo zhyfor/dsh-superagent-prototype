@@ -589,7 +589,7 @@ describe('github source', () => {
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13])
     // The cursor moved together with the Issue it does not cover yet.
     expect(Date.parse(h.store.get<string>('github-since')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
-    expect(h.store.get('github-retry')).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
+    expect(h.store.get('github-retry')).toEqual({ 12: { since: '2026-09-07T23:55:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
     expect(h.store.threads.get('github:12')!.meta.pollError).toContain('Bad Gateway')
     Object.assign(routes, { notifications: [], 'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }),
       'issues/12/comments': [mention(2, 12, '2026-09-08T02:00:00Z')] })
@@ -631,6 +631,20 @@ describe('github source', () => {
     await pollRound(h)
     expect(h.receive.mock.calls.map(([trigger]) => trigger.text)).toEqual(['@agent-bot please fix'])
     expect(h.health.github).toMatchObject({ state: 'ready', detail: '1 notifications; next poll ≥ 60s; 2 unreadable items skipped' })
+    h.store.close()
+  })
+  it('re-reads a notified Issue from its own cursor so a notification published late still brings its comment', async () => {
+    const h = host()
+    // The global cursor and the thread's cursor both passed the comment before GitHub published its notification.
+    h.store.set('github-since', '2026-09-08T02:00:00.000Z')
+    h.store.set('github-cursor:12', '2026-09-08T02:00:30.000Z')
+    const late = { id: 5, body: '@agent-bot late mention', user: { login: 'alice', type: 'User' },
+      html_url: 'https://github.com/acme/widgets/issues/12#issuecomment-5',
+      created_at: '2026-09-08T01:59:30.000Z', updated_at: '2026-09-08T01:59:30.000Z' }
+    github(h, { notifications: [{ ...notification(12), updated_at: '2026-09-08T02:00:10.000Z' }],
+      'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }), 'issues/12/comments': [late] })
+    await pollRound(h)
+    expect(h.receive.mock.calls.map(([trigger]) => trigger.text)).toEqual(['@agent-bot late mention'])
     h.store.close()
   })
   it('reads every page of the notifications when GitHub says there are more, and waits as long as GitHub asks', async () => {
@@ -858,8 +872,8 @@ describe('github source', () => {
     await pollRound(h)
     const expected = commentTrigger(comment, { number: 12, isPr: false, url }, 'conversation', 'agent-bot')
     expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([expected])
-    // An Issue has only its conversation; the comments are read since the notification cursor.
-    const since = encodeURIComponent('2026-09-08T00:00:00.000Z')
+    // An Issue has only its conversation; the comments are read since the notification cursor less the late-notification overlap.
+    const since = encodeURIComponent('2026-09-07T23:55:00.000Z')
     expect(reads.filter(path => path.includes('/comments'))).toEqual([`issues/12/comments?per_page=100&since=${since}`])
     h.store.close()
   })
