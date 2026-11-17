@@ -148,7 +148,7 @@ it('routes several triggers in one call, in order, and answers a refused or fail
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
     // A stop without its ticket is refused, alone.
     { kind: 'stop', trigger_id: request.id },
-    { kind: 'accept', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' },
+    { kind: 'accept', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' },
     { kind: 'attach', trigger_id: other.id, ticket_id: 'no-such-ticket' },
     { kind: 'attach', trigger_id: more.id, ticket_id: ticket.id },
   ] }) as { results: Record<string, unknown>[] }
@@ -168,7 +168,7 @@ it('refuses alone an item that lacks a field its kind needs or breaks a field\'s
   for (const trigger of triggers) h.runtime.receive(trigger)
   await h.runtime.idle()
   const [a, b, c, d, e] = triggers.map(trigger => trigger.id) as [string, string, string, string, string]
-  const accept = { kind: 'accept', title: 'Fix', acknowledgement: '收到。' }
+  const accept = { kind: 'accept', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。', title: 'Fix', acknowledgement: '收到。' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept, trigger_id: a },
     { ...accept, trigger_id: b, worktree_name: 'one-two-three-four-five' },
@@ -187,13 +187,24 @@ it('refuses alone an item that lacks a field its kind needs or breaks a field\'s
   expect(h.runtime.store.tickets.list()).toEqual([])
 })
 
+it('requires a plan on accept through orchestrator_route and stores it on the ticket', async () => {
+  const request = feishu('1', '@bot 修一下回归')
+  h.runtime.receive(request); await h.runtime.idle()
+  await expect(h.route({ kind: 'accept', trigger_id: request.id, title: 'Fix', worktree_name: 'fix-regression', acknowledgement: '收到。' }))
+    .rejects.toThrow('accept needs plan')
+  const plan = '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。'
+  const accepted = await h.route({ kind: 'accept', trigger_id: request.id, title: 'Fix', worktree_name: 'fix-regression', plan, acknowledgement: '收到。' })
+  const ticketId = (accepted.ticket as { ticket_id: string }).ticket_id
+  expect(h.runtime.store.tickets.get(ticketId)!.plan).toBe(plan)
+})
+
 it('decides a candidate\'s batch with its card\'s trigger: a second accept keeps the first, and no other decision contradicts it', async () => {
   await h.runtime.settings.pause(true, 'panel')
   const first = feishu('1', '@bot 首页的标题'), second = feishu('2', '@bot 改成“浏览网页”', { root_id: 'om_1' })
   h.runtime.receive(first); h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accept = { kind: 'accept', worktree_name: 'retitle', acknowledgement: '收到。' }
+  const accept = { kind: 'accept', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。', worktree_name: 'retitle', acknowledgement: '收到。' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept, trigger_id: first.id, title: 'Retitle' },
     { ...accept, trigger_id: second.id, title: 'Another title' },
@@ -237,7 +248,7 @@ it('ignores a proactive candidate from its card beside other decisions, marked s
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { kind: 'ignore', trigger_id: chat.id, reason: 'Lunch chat.' },
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
-    { kind: 'accept', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。' },
+    { kind: 'accept', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。' },
   ] }) as { results: Record<string, unknown>[] }
   expect(results).toEqual([
     { trigger_id: chat.id, kind: 'ignore', decision: 'ignore', reason: 'Ignored from its card, without a rule assessment; Lunch chat.' },
@@ -258,7 +269,7 @@ it('returns where a reply stands: sent, or dropped when its conversation can no 
 it('checks an acknowledgement against the IM word limit, not a character count', async () => {
   const trigger = feishu('1', '@bot 修一下回归')
   h.runtime.receive(trigger); await h.runtime.idle()
-  const accept = (acknowledgement: string) => h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression', acknowledgement })
+  const accept = (acknowledgement: string) => h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression', acknowledgement })
   await expect(accept(words(IM_WORDS + 1))).rejects.toThrow(`at most ${IM_WORDS} words`)
   expect(await accept(words(IM_WORDS))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
 })
@@ -381,7 +392,7 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   const second = feishu('2', '@bot 另一个问题', { root_id: 'om_1' })
   h.runtime.receive(second); await h.runtime.idle()
   await handBack(second.id)
-  const b = (await h.route({ kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' })).ticket as
+  const b = (await h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' })).ticket as
     { ticket_id: string }
   h.runtime.engine.stopTicket(b.ticket_id)
   // A follow-up reaches the live ticket without an Eval; handed back, its candidate shows where it went.
@@ -479,7 +490,7 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   await h.runtime.receive(first); await h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accepted = await h.route({ kind: 'accept', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。' })
+  const accepted = await h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。' })
   await h.runtime.idle()
   const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
   const other = ticket.origin.triggerIds.find(id => id !== ticket.origin.triggerId)!

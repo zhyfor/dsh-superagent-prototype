@@ -131,6 +131,15 @@ it('asks the assessment only for decisions its tool accepts, which no longer inc
   expect(result('ignore', { ticket_id: 't' })).toBe(false)
 })
 
+it('requires a confirmed plan for acceptance in the assessment schema', () => {
+  const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'e' }
+  const base = { decision: 'accept' as const, rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'r' }], direction,
+    title: 't', scope: 's', reason: 'r', intent_evidence: 'e', worktree_name: 'fix-copy' }
+  expect(AssessmentSchema.safeParse(base).success).toBe(false)
+  expect(AssessmentSchema.safeParse({ ...base, plan: '   ' }).success).toBe(false)
+  expect(AssessmentSchema.safeParse({ ...base, plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。' }).success).toBe(true)
+})
+
 it('loads a window without the assessment instructions: the trigger once, cut messages with their length, and stubs for the rest',
   async () => {
   const bodies = Array.from({ length: 30 }, (_, i) => `comment ${i}: ${'the label reads oddly on the settings page. '.repeat(i % 4 === 0

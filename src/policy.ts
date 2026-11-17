@@ -51,6 +51,7 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
   if (!directionAllowed(assessment.direction)) return { kind: 'ignore', audit, reason: { code: 'directionUnsettled' } }
   if (!matches.length) return { kind: 'ignore', audit, reason: { code: 'noRuleMatched' } }
   if (!assessment.intent_evidence) throw new Error('Acceptance requires intent_evidence')
+  if (!assessment.plan?.trim()) throw new Error('Acceptance requires a confirmed short plan')
   const { title, scope, worktree_name: name } = assessment
   if (strength === 'inferred' && settings.eval.mode !== 'auto') {
     const proposal = { title, scope, worktree_name: name }

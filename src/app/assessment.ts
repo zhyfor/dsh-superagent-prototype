@@ -27,12 +27,14 @@ export const AssessmentSchema = z.object({
   title: z.string().min(1).max(160),
   worktree_name: WorktreeNameSchema.optional(),
   scope: z.string().max(1500),
-  plan: z.string().trim().min(1).max(4000).nullish().describe('For acceptance: the confirmed short plan for the worker, with 目标、范围、改动位置、实施步骤、验收、回滚.'),
+  plan: z.string().trim().min(1).max(4000).nullish().describe('Acceptance plan: 目标、范围、改动位置、实施步骤、验收、回滚.'),
   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
   reason: z.string().min(1).max(500),
 }).strict().refine(value => value.decision !== 'accept' || !directionAllowed(value.direction) || !value.rule_assessments.some(rule => rule.matched)
   || !!value.worktree_name, { message: 'Accepted work requires a short English worktree_name', path: ['worktree_name'] })
+  .refine(value => value.decision !== 'accept' || !directionAllowed(value.direction) || !value.rule_assessments.some(rule => rule.matched)
+    || !!value.plan?.trim(), { message: 'Accepted work requires a confirmed short plan', path: ['plan'] })
 
 /** Character limits in the initial thread window: for the trigger itself, its two nearest neighbours, other window messages, and stub previews. */
 const TRIGGER_CHARS = 4000, NEAR_CHARS = 1200, WINDOW_CHARS = 400, STUB_CHARS = 50

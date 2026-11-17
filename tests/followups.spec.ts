@@ -59,7 +59,7 @@ it('leaves a delivered follow-up to its ticket\'s worker: the main Session may s
   // A guest's follow-up stays inferred, so its stop does not stop the work; the main Session cannot route or requeue it.
   const guest = await settle('4', '别做了', 'ou_guest')
   expect(await h!.route({ kind: 'stop', ticket_id: ticket.id, trigger_id: guest })).toMatchObject({ decision: 'ignore' })
-  await expect(h!.route({ kind: 'accept', trigger_id: guest, title: 'More', worktree_name: 'more', acknowledgement: 'ok' }))
+  await expect(h!.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: guest, title: 'More', worktree_name: 'more', acknowledgement: 'ok' }))
     .rejects.toThrow(decides)
   await expect(master('orchestrator_trigger_requeue', { trigger_id: guest })).rejects.toThrow(decides)
   // A person may still send it to Eval from the panel.
@@ -74,13 +74,13 @@ it('leaves a delivered follow-up to its ticket\'s worker: the main Session may s
     .toMatchObject({ ticket: expect.objectContaining({ ticket_id: other.ticket.id }) })
   const work = await settle('6', '另外把导出按钮也加上')
   const request = { trigger_id: work, title: '导出按钮', worktree_name: 'export', acknowledgement: '收到，加导出按钮。' }
-  await expect(h!.route({ kind: 'accept', ...request })).rejects.toThrow(decides)
+  await expect(h!.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', ...request })).rejects.toThrow(decides)
   // The attach subscribed the other ticket to this thread, so its worker decides the message too; it is new work once both
   // hand it back.
   await h.runTool(sessionId, 'orchestrator_trigger_handback', { trigger_id: work, reason: 'It asks for an export button.' })
-  await expect(h!.route({ kind: 'accept', ...request })).rejects.toThrow(decides)
+  await expect(h!.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', ...request })).rejects.toThrow(decides)
   await h.runTool(other.sessionId, 'orchestrator_trigger_handback', { trigger_id: work, reason: 'Not this ticket either.' })
-  const accepted = await h!.route({ kind: 'accept', ...request })
+  const accepted = await h!.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', ...request })
   expect(h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!.mandate).toMatchObject({ strength: 'explicit' })
   // A stop on a person's request needs no hand-back.
   const stop = await settle('7', '先停一下')
@@ -272,7 +272,7 @@ it('keeps a listed member\'s request on a ticket\'s thread to that ticket, so it
   expect(h.relays(sessionId)).toEqual([expect.objectContaining({ trigger_id: request.id })])
   expect(notices(h)).toEqual([expect.objectContaining({ trigger_id: request.id,
     note: expect.stringContaining('orchestrator_route kind stop') })])
-  await expect(h.route({ kind: 'accept', trigger_id: request.id, title: '概览页按钮',
+  await expect(h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: request.id, title: '概览页按钮',
     worktree_name: 'overview-button', acknowledgement: '收到。' })).rejects.toThrow(/its worker decides whether it belongs there/)
   // The worker takes it as within its ticket and says so.
   expect(await h.runTool(sessionId, 'orchestrator_ack', { trigger_id: request.id, text: '收到：概览页的保存按钮也一起改。' }))
@@ -289,7 +289,7 @@ it('leaves a follow-up to its ticket\'s worker after the main Session drops the 
   const master = (name: string, args: Record<string, unknown>) => h!.runTool(h!.runtime.masterId, name, args)
   expect(await master('orchestrator_thread_unsubscribe', { thread: THREAD })).toEqual({ removed: true, thread: THREAD })
   // The worker has the message and still decides it, so the main Session cannot open a second ticket for it.
-  await expect(h!.route({ kind: 'accept', trigger_id: request.id, title: '导出按钮', worktree_name: 'export',
+  await expect(h!.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: request.id, title: '导出按钮', worktree_name: 'export',
     acknowledgement: '收到，加导出按钮。' })).rejects.toThrow(/its worker decides whether it belongs there/)
   expect(h.runtime.store.tickets.list().map(item => item.id)).toEqual([ticket.id])
 })

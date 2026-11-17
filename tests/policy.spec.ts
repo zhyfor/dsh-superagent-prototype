@@ -283,7 +283,12 @@ describe('assessment outcomes', () => {
   const judged = (current: ReturnType<typeof settings>, matched: boolean) =>
     current.policy.rules.filter(rule => rule.enabled).map(rule => ({ rule_id: rule.id, matched, reason: 'judged' }))
   const accept = (current: ReturnType<typeof settings>, matched = true) => ({ decision: 'accept' as const, rule_assessments: judged(current, matched),
-    direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote', worktree_name: 'fix-copy' })
+    direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote', worktree_name: 'fix-copy', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。' })
+  it('refuses acceptance without a confirmed plan', () => {
+    const parsed = settings('auto')
+    expect(() => assessmentOutcome({ ...accept(parsed), plan: undefined }, parsed, 'explicit')).toThrow('Acceptance requires a confirmed short plan')
+    expect(() => assessmentOutcome({ ...accept(parsed), plan: '   ' }, parsed, 'explicit')).toThrow('Acceptance requires a confirmed short plan')
+  })
   it('accepts an inferred candidate on its matched rules in auto mode only, and the Policy admits only enabled matched rules', () => {
     const auto = settings('auto')
     const outcome = assessmentOutcome(accept(auto), auto, 'inferred')
@@ -315,7 +320,7 @@ describe('admission table settings', () => {
   it('accepts an explicit candidate whatever the accept mode, which bears only on inferred ones', () => {
     const rules = SettingsSchema.parse({}).policy.rules.filter(rule => rule.enabled)
     const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'asked' }
-    const assessment = { decision: 'accept' as const, direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote',
+    const assessment = { decision: 'accept' as const, direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',
       rule_assessments: rules.map((rule, index) => ({ rule_id: rule.id, matched: index === 0, reason: 'judged' })) }
     for (const mode of ['observe', 'off'] as const) {
       const settings = SettingsSchema.parse({ eval: { mode } })
@@ -336,7 +341,7 @@ describe('rule judgements', () => {
     const parsed = SettingsSchema.parse({ eval: { mode: 'auto' }, policy: { rules: [{ id: 'copy', name: 'Copy', enabled: true, instruction: 'Fix typos.' },
       { id: 'visual', name: 'Visual', enabled: true, instruction: 'Fix colors.' }] } })
     const direction = { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'asked' }
-    const assessment = { decision: 'accept' as const, direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote',
+    const assessment = { decision: 'accept' as const, direction, title: 'Fix', scope: 'small', reason: 'asked', intent_evidence: 'quote', plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',
       rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'typo' }, { rule_id: 'copy', matched: false, reason: 'again' }] }
     expect(() => assessmentOutcome(assessment, parsed, 'inferred')).toThrow('Exactly one assessment for every enabled rule')
     const once = { ...assessment, rule_assessments: [assessment.rule_assessments[0]!, { rule_id: 'visual', matched: false, reason: 'no colors' }] }

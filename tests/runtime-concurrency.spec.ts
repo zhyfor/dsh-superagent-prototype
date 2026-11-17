@@ -91,7 +91,7 @@ it('runs prepare commands in the background, side by side, while accepts, intake
   for (const trigger of first) h.runtime.receive(trigger)
   await h.runtime.idle()
   for (const [index, trigger] of first.entries()) {
-    const accepted = await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${index}`, acknowledgement: '收到。' })
+    const accepted = await h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${index}`, acknowledgement: '收到。' })
     expect(accepted).toMatchObject({ decision: 'accept', ticket: { state: 'working/queued' } })
   }
   await waitUntil(() => prepares() === 2)
@@ -114,7 +114,7 @@ it('keeps a launch that a pause cut short queued, and finishes it once processin
   h.hooks.prepare = prepare.promise
   const trigger = feishu('1', '@bot 修一')
   h.runtime.receive(trigger); await h.runtime.idle()
-  await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-one', acknowledgement: '收到。' })
+  await h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-one', acknowledgement: '收到。' })
   await waitUntil(() => h.subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh'))
   await h.runtime.settings.pause(true, 'panel')
   prepare.resolve(); await h.runtime.idle()
@@ -166,7 +166,7 @@ it('counts a launch under way against maxWorkers, so a bot\'s Input for an idle 
   const prepare = deferred()
   h.hooks.prepare = prepare.promise
   h.runtime.receive(feishu('5', '@bot 修二')); await h.runtime.idle()
-  await h.route({ kind: 'accept', trigger_id: feishu('5', '').id, title: 'two', worktree_name: 'fix-two', acknowledgement: '收到。' })
+  await h.route({plan: '目标：修复；范围：相关代码；改动位置：定位；实施步骤：修复；验收：测试；回滚：revert。',  kind: 'accept', trigger_id: feishu('5', '').id, title: 'two', worktree_name: 'fix-two', acknowledgement: '收到。' })
   await waitUntil(() => h.subprocess.spawn.mock.calls.filter(([spec]) => spec.argv[0] === 'sh').length === 2)
   h.runtime.receive(botMessage()); await h.runtime.pump()
   expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toHaveLength(1)
