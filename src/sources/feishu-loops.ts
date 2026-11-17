@@ -11,6 +11,7 @@ import { readFeishu, type FeishuRef } from './feishu-read.ts'
 import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyEvent, HistoryPageSchema, SOURCE, topicEvent }
   from './feishu-trigger.ts'
 import { health, type SourceContext } from './host.ts'
+import { handleFeishuIssue } from './feishu-issue.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
@@ -24,6 +25,7 @@ const bot = (ctx: SourceContext): FeishuBot => {
   return resolved
 }
 async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
+  if (await handleFeishuIssue(ctx, trigger)) return
   await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
   if (!chatId) return
