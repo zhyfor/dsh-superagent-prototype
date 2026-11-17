@@ -154,6 +154,12 @@ const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOSt
 const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !ctx.config(SOURCE)
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
+/**
+ * How far before a notification cursor a notified thread is read again. GitHub can publish a notification after the
+ * cursor has passed the subject's last update: the next round's global cursor then filters the comment out, and the
+ * notification's `since` never returns it again. Five minutes also covers clock skew.
+ */
+const NOTIFICATION_OVERLAP_MS = 5 * 60_000
 /** True when GitHub returns HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
 const deleted = (error: unknown): boolean => error instanceof CliError && error.code === 410
 /** Records a failed read on the Thread and in the round; deleted (410) or abandoned (24h+) threads do not fail the round. */
@@ -301,7 +307,9 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
   const since = state.get(KV.github.since) ?? round.started
   if (state.get(KV.github.since) === undefined) state.set(KV.github.since, since)
   const { repository } = ctx.deployment
-  const path = `notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`
+  // Ask for the overlap too, so a notification published after the cursor still comes back once.
+  const askedSince = new Date(Date.parse(since) - NOTIFICATION_OVERLAP_MS).toISOString()
+  const path = `notifications?all=true&per_page=50&since=${encodeURIComponent(askedSince)}`
   const raw = await commands.api(path, '--include')
   const split = raw.search(/\r?\n\r?\n/)
   if (split < 0) throw new Error('GitHub returned no HTTP headers')
@@ -320,7 +328,9 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
     const address = githubAddress(notification.subject.url ?? '', repository)
     if (!address || address.discussion || items.has(address.number)) continue
     const { number, pr } = address
-    items.set(number, { since: [state.get(KV.github.cursor(number)) ?? since, since].sort().at(-1)!, pr })
+    // Read from the thread's last read position, not the global cursor: the notification may name an event older than it.
+    const lastRead = state.get(KV.github.cursor(number)) ?? since
+    items.set(number, { since: new Date(Date.parse(lastRead) - NOTIFICATION_OVERLAP_MS).toISOString(), pr })
   }
   for (const [number, item] of items) {
     if (stopped(ctx, round)) return { count: notifications.length, interval }

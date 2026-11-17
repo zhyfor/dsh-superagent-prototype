@@ -53,4 +53,6 @@ export const KV = {
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
+  /** Feishu issue bridge: one GitHub task-ledger issue per Feishu topic. */
+  feishuIssue: { links: record<Record<string, { number: number; url: string; title: string; updatedAt: string }>>('feishu-issue-links') },
 }

@@ -5,6 +5,7 @@ import { checkedImText } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
 import { feishuTriggerId } from './feishu-trigger.ts'
+import { appendIssueMenu, markIssueAsked, shouldAskIssueMenu } from './feishu-issue.ts'
 
 /** Feishu or Lark AppLink that opens a chat; used when the message's own link was not delivered with the event. */
 export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string =>
@@ -19,8 +20,14 @@ const gone = (error: unknown): boolean => error instanceof CliError && error.cod
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const messageId = message.channel.address.messageId
   if (!messageId) throw new Error('Missing Feishu reply target')
-  const text = checkedImText(message.text)
-  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', message.id]
+  let text = message.text
+  const thread = message.channel.thread
+  if (message.kind === 'reply' && thread && shouldAskIssueMenu(thread)) {
+    text = appendIssueMenu(text)
+    markIssueAsked(thread)
+  }
+  const checked = checkedImText(text)
+  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', checked, '--reply-in-thread', '--idempotency-key', message.id]
   try { await host.commands.lark(reply) }
   catch (error) {
     if (gone(error)) return 'gone'

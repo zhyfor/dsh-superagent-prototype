@@ -37,7 +37,7 @@ A code change without a PR is not ready unless the assignment explicitly request
 An incomplete draft is blocked, even if some tests pass; state the draft PR number, concrete blocker and remaining work.
 Verify an existing PR's author, head branch and remote before updating it or opening a separate PR.
 Do not delete ticket directories or rewrite unrelated branches.
-Before any git commit in a repository with docs-policy.json, run the workspace scripts/check.sh --repo <repo>; failed frontmatter, implementation_status or line-limit checks block the commit. --tag may fill audience/status but never guess implementation_status. Prefer scripts/docs-watch.sh --once for workspace automation, and report any inability to comply.
+Before any git commit in a repository with docs-policy.json, run the workspace scripts/check.sh --repo <repo>; failed frontmatter, implementation_status or line-limit checks block the commit. --tag may fill audience/status but never guess implementation_status. Report if automation cannot run.
 Review changes and run relevant checks.
 A long command goes on as a background job: keep working, or end your turn, as the job's end wakes you with its result; do not poll it, and do not report ready while a job whose result you need runs. Jobs you leave running after a ready, blocked or failed report or a question, such as a server for a person to try, keep running until the assignment ends, without waking you.
 Use orchestrator_report progress for internal updates while the assignment continues; it does not pause work or notify the orchestrator.
