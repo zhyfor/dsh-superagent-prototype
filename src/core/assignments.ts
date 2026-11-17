@@ -15,7 +15,7 @@ export interface WorkerReport {
   question?: string | null
   /** The person's message whose request raised the question; routes the question to the channel where it was written. */
   askedBy?: string
-  /** The person's question this report answers, which the worker thereby takes up; authorizes the main Session to send an answer reply. */
+  /** The person's question this report answers, which the worker thereby takes up; authorizes the assessment Session to send an answer reply. */
   answers?: string
 }
 const RECOVERY_NOTE = 'The host restarted during this ticket. Inspect the current worktree, git history and GitHub state before continuing. Do not repeat an already completed external operation. Finish the original assignment and report its status.'
@@ -66,8 +66,11 @@ export class Assignments extends EnginePart {
   turnEnded(ticketId: string, assignmentId: string): void {
     const ticket = this.running(ticketId, assignmentId)
     if (!ticket) return
-    runningAssignment(ticket)!.idleAt = this.now()
+    const assignment = runningAssignment(ticket)!
+    assignment.idleAt = this.now()
     this.repo.tickets.save(ticket)
+    const state = assignment.report?.state
+    if (state && state !== 'progress') this.tickets.finishAssignment(ticketId, assignmentId, state)
   }
   deliveryFailed(ticketId: string, assignmentId: string, error: string): void {
     const ticket = this.running(ticketId, assignmentId)
@@ -88,7 +91,9 @@ export class Assignments extends EnginePart {
     const busy = !!running.deliveredAt && !!report && running.deliveredAt >= report.at
     const settled = !!report && ['waiting', 'ready', 'blocked', 'failed'].includes(report.state) && !busy
     if (!settled) this.tickets.restart(ticket, running, 'hostRestarted', RECOVERY_NOTE)
-    else if (ticket.undelivered.length) this.options.executor.deliver(ticket, running)
+    // A terminal report from before the restart is already a finished phase: end the stale running Assignment.
+    // Any Input that arrived meanwhile starts the next phase through `finishAssignment`.
+    else this.tickets.finishAssignment(ticketId, running.id, report.state)
   }
   /**
    * Records a worker status report on an open ticket's current assignment, updating `attention`, `answers`, held automated
@@ -109,7 +114,9 @@ export class Assignments extends EnginePart {
     if (report.answers && !person(report.answers, false)) throw new UserError('notAnswerable')
     const assignment = runningAssignment(ticket) ?? latestAssignment(ticket)
     if (!assignment) throw new UserError('unknownAssignment')
-    if (assignment.state === 'ended') throw new UserError('assignmentEnded')
+    const ended = assignment.state === 'ended'
+    const phaseEnded = ended && ['waiting', 'ready', 'blocked', 'failed', 'dropped'].includes(assignment.endedReason ?? '')
+    if (ended && !phaseEnded) throw new UserError('assignmentEnded')
     const at = this.now()
     const previous = ticket.attention
     const ask = (question: string) => ({ id: key('attention', ticketId, question, at), question, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })
@@ -130,6 +137,9 @@ export class Assignments extends EnginePart {
     // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
     const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped' : report.state === 'ready' ? ready : undefined
     if (outcome) this.tickets.end(ticketId, 'executor', outcome, at)
+    // `waiting` is produced at the end of a turn, so it has no later turn boundary to wait for. Other terminal
+    // reports end their Assignment in `turnEnded`, after the Executor has handed off jobs and subagents.
+    else if (!ended && report.state === 'waiting') this.tickets.finishAssignment(ticketId, assignment.id, report.state)
     return this.require(ticketId)
   }
   /** The ticket, while it is open and `assignmentId` runs it. */

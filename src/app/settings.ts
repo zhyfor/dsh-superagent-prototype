@@ -63,7 +63,7 @@ export interface SettingsHost {
   /** DSH Cordis context used to validate and resolve role models. */
   readonly context: Context
   readonly lifetime: AbortSignal
-  /** Session manager through which the main Session is notified of saved settings. */
+  /** Session manager through which the assessment Session is notified of saved settings. */
   readonly sessions: Pick<Sessions, 'notify' | 'delivery'>
   /** Source host passed to source kinds' policy syncs and label refreshes. */
   readonly sourceHost: SourceHost
@@ -76,7 +76,7 @@ export interface SettingsHost {
 /**
  * Validates and persists block-scoped settings in `Store`, enforces origin guards, and manages source policy synchronization and label refreshes.
  * `Runtime`, management HTTP routes, and main-Session tools read and save settings through it.
- * Notifies `Engine` when the policy version changes, notifies the main Session via `Sessions`, and triggers `Setup` restarts or `Passes` runs when saved settings take effect.
+ * Notifies `Engine` when the policy version changes, notifies the assessment Session via `Sessions`, and triggers `Setup` restarts or `Passes` runs when saved settings take effect.
  * Tracks per-source synchronization status in `HealthBoard` and retries failed syncs with exponential backoff.
  */
 export class Settings {

@@ -85,7 +85,7 @@ export function environmentSection(config: PromptConfig, variables: Variable[] |
     : 'Execution environment: dsh-superagent is waiting for setup; the management panel names what is missing.'
 }
 /**
- * The main Session's Policy section: the Policy version and accept mode it judges proactive candidates by, and every enabled
+ * The assessment Session's Policy section: the Policy version and accept mode it judges proactive candidates by, and every enabled
  * rule, as the settings hold them, each on one line, so a line of an instruction reads as no rule or heading of its own; the
  * settings bound each instruction (`LIMITS.ruleInstruction`). `key` names the template it was filled from.
  */
@@ -97,7 +97,7 @@ export function policySection(settings: Settings, config: PromptConfig = default
 }
 /**
  * Assemble a role's system prompt sections in order from fixed templates, team sections, the generated execution environment
- * and, last, the main Session's generated Policy section, which nothing follows, and whose change leaves the rest unchanged.
+ * and, last, the assessment Session's generated Policy section, which nothing follows, and whose change leaves the rest unchanged.
  */
 export function promptParts(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string }) {
   // A built-in part names the key its text is overridden by, which for the handoff names the role.
@@ -138,7 +138,7 @@ export class Prompts {
     private readonly feishu: () => boolean) {
     this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
   }
-  /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
+  /** A role's prompt; the assessment Session's Policy section follows the settings as they are now, at each model request. */
   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
     return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
   }
@@ -235,7 +235,7 @@ export class Prompts {
     return { revisions, next_offset: offset + revisions.length <= current.revision ? offset + revisions.length : null }
   }
 }
-/** Save a new prompt revision and notify the main Session when the change originated outside its own tool call. */
+/** Save a new prompt revision and notify the assessment Session when the change originated outside its own tool call. */
 export async function savePrompts(host: { store: Pick<Store, 'atomic'>; prompts: Pick<Prompts, 'save'>; sessions: Pick<Sessions, 'notify' | 'delivery'> },
   config: unknown, baseRevision: number, origin: SettingsOrigin) {
   const version = host.store.atomic(() => {

@@ -61,7 +61,6 @@ export interface ResourceHost {
   readonly pages: TextCache
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'skills' | 'defaultChanged'>
   readonly commands: Commands
-  readonly masterId: string
   readonly context: Context
   promptVersion(sessionId: string): PromptVersion
   /** Whether a Session may read `revision` (the revision it currently runs under or any revision it ran under previously). */
@@ -79,9 +78,9 @@ interface Read {
 }
 type Route = readonly [name: string, read: (read: Read) => unknown]
 
-/** Enforces that main-Session-only resources cannot be read by worker Sessions. */
+/** Enforces that assessment-Session-only resources cannot be read by worker Sessions. */
 const main = ({ host, ticketId }: Read): MainResourceHost => {
-  if (ticketId || !('settings' in host)) throw new Error('This resource belongs to the main Session')
+  if (ticketId || !('settings' in host)) throw new Error('This resource belongs to an assessment Session')
   return host as MainResourceHost
 }
 const text = ({ resource, offset, limit }: Read, body: string) => textPage(resource, body, offset, limit ?? 4000)
@@ -293,16 +292,16 @@ const ROUTES: readonly Route[] = [
 ]
 
 /**
- * Read a paginated resource for the main Session or a ticket's worker Session.
+ * Read a paginated resource for an assessment Session or a ticket's worker Session.
  * Legacy prefixes (`event/`, `task/`, `observation/`) remain accepted so references in older Session history stay readable.
  */
 export async function readResource(host: ResourceHost, resource: string, offset: number, limit: number | undefined, ticketId?: string,
-  signal?: AbortSignal) {
+  sessionId?: string, signal?: AbortSignal) {
   const name = resource.replace(/^event\//, 'trigger/').replace(/^task\//, 'ticket/').replace(/^observation\//, 'decision/')
   const route = ROUTES.find(([route]) => route.endsWith('/') ? name.startsWith(route) : name === route)
   if (!route) throw new Error('Unknown context resource')
-  const sessionId = ticketId ? workerSessionId(ticketId) : host.masterId
+  const cacheId = ticketId ? workerSessionId(ticketId) : (sessionId ?? '')
   const rest = route[0].endsWith('/') ? name.slice(route[0].length) : ''
-  return route[1]({ host, resource: name, rest, offset, sessionId, ...limit ? { limit } : {}, ...ticketId ? { ticketId } : {},
+  return route[1]({ host, resource: name, rest, offset, sessionId: cacheId, ...limit ? { limit } : {}, ...ticketId ? { ticketId } : {},
     ...signal ? { signal } : {} })
 }

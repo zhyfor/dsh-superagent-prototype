@@ -705,10 +705,12 @@ describe('interrupted assignments', () => {
     const first = h.repo.tickets.get(interrupted)!.assignments[0]!
     const waiting = accepted(h, '2', 't2').ticketId!
     h.engine.report(waiting, { state: 'waiting', summary: 'done for now' })
+    const waitingEnded = h.repo.tickets.get(waiting)!.assignments[0]!
     h.engine.receive(trigger('3', { threads: [{ source: 'chat', id: 't2' }] }))
     vi.mocked(h.executor.start).mockClear(); vi.mocked(h.executor.deliver).mockClear()
     // The Executor reports each Assignment that was running; a fact about one that no longer runs is dropped.
-    for (const id of [interrupted, waiting]) h.engine.assignmentInterrupted(id, runningAssignment(h.repo.tickets.get(id)!)!.id)
+    h.engine.assignmentInterrupted(waiting, waitingEnded.id)
+    h.engine.assignmentInterrupted(interrupted, runningAssignment(h.repo.tickets.get(interrupted)!)!.id)
     h.engine.assignmentInterrupted(interrupted, first.id)
     const ticket = h.repo.tickets.get(interrupted)!
     expect(ticket.assignments).toEqual([expect.objectContaining({ id: first.id, state: 'ended', endedReason: 'hostRestarted' }),
@@ -716,9 +718,10 @@ describe('interrupted assignments', () => {
     expect(ticket.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('The host restarted') })])
     expect(ticket.undelivered).toEqual([ticket.inputs[0]!.id])
     expect(h.executor.start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: interrupted }), ticket.assignments[1])
-    // A worker that waits keeps its Session and gets what waits for it.
-    expect(h.repo.tickets.get(waiting)!.assignments).toHaveLength(1)
-    expect(h.executor.deliver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: waiting }), expect.objectContaining({ state: 'running' }))
+    // A finished phase ends its Assignment; the waiting message starts the next phase instead.
+    expect(h.repo.tickets.get(waiting)!.assignments).toEqual([expect.objectContaining({ id: waitingEnded.id, state: 'ended', endedReason: 'waiting' }),
+      expect.objectContaining({ state: 'pending' })])
+    expect(h.executor.deliver).not.toHaveBeenCalled()
   })
   it('starts again a worker that reported but then got a person\'s message, which it was working on', () => {
     const h = harness()
@@ -726,9 +729,9 @@ describe('interrupted assignments', () => {
     h.engine.report(other, { state: 'waiting', summary: 'done for now' })
     h.tick(1); h.engine.receive(trigger('3', { actor: guest, threads: [{ source: 'chat', id: 't2' }] })); h.settle()
     const running = runningAssignment(h.repo.tickets.get(other)!)!
-    expect(running.deliveredAt! > running.report!.at).toBe(true)
+    expect(running.deliveredAt).toBeDefined()
     h.engine.assignmentInterrupted(other, running.id)
-    expect(h.repo.tickets.get(other)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(h.repo.tickets.get(other)!.assignments.map(item => item.state)).toEqual(['ended', 'ended', 'pending'])
   })
 })
 describe('pause', () => {
@@ -1126,9 +1129,9 @@ describe('ticket commands', () => {
     expect(h.repo.tickets.get(ticketId)!.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('status-only') })])
     h.engine.report(ticketId, { state: 'failed', summary: 'broke' })
     const retried = h.engine.retryTicket(ticketId)
-    expect(retried.assignments).toEqual([expect.objectContaining({ state: 'ended', endedReason: 'retried' }), expect.objectContaining({ state: 'pending' })])
+    expect(retried.assignments.map(item => [item.state, item.endedReason])).toEqual([['ended', 'waiting'], ['ended', 'retried'], ['pending', undefined]])
     expect(h.executor.stop).toHaveBeenCalledOnce()
-    expect(h.executor.start).toHaveBeenLastCalledWith(expect.objectContaining({ id: ticketId }), retried.assignments[1])
+    expect(h.executor.start).toHaveBeenLastCalledWith(expect.objectContaining({ id: ticketId }), retried.assignments[2])
   })
 })
 describe('failed deliveries', () => {
@@ -1395,7 +1398,8 @@ describe('follow-up review: turn ends', () => {
     h.tick(1); h.engine.turnEnded(ticketId, runningAssignment(h.repo.tickets.get(ticketId)!)!.id)
     h.tick(1); h.engine.receive(trigger('3')); h.settle()
     merge(h)
-    expect(h.repo.threads.get('chat:t1')!.pending).toEqual(['3'])
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    expect(h.repo.threads.get('chat:t1')!.pending).toEqual([])
   })
   it('keeps a ticket open at a merge while its worker works on a message it took up, also after a progress report', () => {
     const h = harness()

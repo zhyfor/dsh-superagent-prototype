@@ -30,16 +30,16 @@ flowchart TB
 
 `Runtime` is the composition root; it contains no domain rules. Its constructor locks the state directory, opens the Store and builds each component. If construction fails, it closes the Store and releases the lock.
 
-Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
+Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the assessment Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
 
-Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
+Shutdown cancels turns, waits for passes, effects and agents, closes the Store and releases the lock. The Host's process environment is never mutated. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
 | Part | Module | Does |
 | --- | --- | --- |
 | Setup | `src/app/setup.ts` | Resolves the repository and the accounts by probing their CLIs the way worker shells run them, writes and applies the workers' environment and command shims, and keeps the setup problems; Settings checks a changed account through it, and restarts through it, which runs setup again |
 | Passes | `src/app/passes.ts` | One pass at a time, every two seconds and whenever a command asks: the due effects, then `Engine.evaluateDue`; a Source's Trigger reaches the Engine through it |
 | Outbox | `src/app/outbox.ts` | The Engine's `Outbox` port, and the only writer of the receipts: `send` keeps a message's receipt and queues its `reply` effect in one transaction, and the effect's handler sends it through `SourceRegistry.send`; a message waits while its Source is off, and is dropped when the conversation is gone or not listened to |
-| Notices | `src/app/notices.ts` | Converts domain events and worker activity into main-Session messages. `eventNotice` handles domain notices; `reportRelay` forwards questions immediately, keeps ordinary progress on its Ticket, and relays other reports; `followupRelay` names the Tickets that own a human follow-up. Relays arriving during a turn are delivered together at its next step through the DeepSeek Harness inbox |
+| Notices | `src/app/notices.ts` | Converts domain events and worker activity into messages for the target Thread's assessment Session. `eventNotice` handles domain notices; `reportRelay` forwards questions immediately, keeps ordinary progress on its Ticket, and relays other reports; `followupRelay` names the Tickets that own a human follow-up. Relays arriving during a turn are delivered together at its next step through the DeepSeek Harness inbox |
 
 ### Engine
 
@@ -68,13 +68,13 @@ Callers receive only their role's `Pick` of the Engine: `EngineForSources`, `Eng
 | Sources | `receive(trigger)` | Stores a Trigger once and answers `stored`, `duplicate`, or `filtered` when no Source receives it; fans it out to the Tickets subscribed to its Threads, where a person's message resumes an ended Ticket at once unless processing is paused, and queues it for Eval on its primary Thread, unless it is a person's message that reached a Ticket, which stays that Ticket's |
 | Sources | `bindThread(ticketId, thread, own)` | Makes an open Ticket follow one of the Source's Threads, such as a pull request's, `own` when the Ticket opened it; a closed Thread bound again is open again. The Threads' closes, not a `ready` Report, end the Ticket |
 | Sources | `threadClosed(thread, outcome, at)` | A Thread closed: each open Ticket that follows it records the close, and ends once it is done with the Threads it follows (`followsDone`): no Thread it opened is open, or, when it opened none, every Thread it follows closed. It ends `merged` or `closed` as the latest of those closes did, unless work resumed after the close has not reported `ready`, or its Executor took up, by acknowledging or answering it, a person's follow-up it decides after its latest Report other than `progress`, or the end of its last turn; a `dropped` Report then ends it as the close did |
-| Main Session | `candidate(triggerId)` | The Eval that holds a Trigger, as its assessor sees it |
-| Main Session | `candidateDelivered(evalId)` | The Eval's candidate reached the main Session: its deadline counts from now |
-| Main Session | `decide(triggerId, outcome)` | Records an Eval Decision, or a direct Decision for an explicit request. Accept creates the Ticket, Mandate, Assignment, Subscriptions and acknowledgement atomically. An inferred candidate ignored from its card records `ignoredFromCard` before the supplied reason. While `followupOwners` still owns a human follow-up, only stop is allowed |
-| Main Session | `attach(ticketId, triggerId, note?)` | Routes a Trigger to a Ticket it points at, whose Executor then decides it as a follow-up, and ends the Eval that holds it, whose other Triggers wait for a fresh Eval; an ended Ticket resumes under its Mandate at once unless processing is paused. A follow-up an Executor still decides is refused, as is one routed back to the Ticket that handed it back |
-| Main Session | `requestStatus(ticketId)` | Asks a waiting Executor Session for its status, and answers whether it asked |
-| Main Session | `note(ticketId, text)` | Gives a Ticket's Executor a fact from other work as a text Input, which grants nothing |
-| Main Session, Executor | `reply(request)` | Queues a message for the Channel its purpose names: `acknowledgement`, `answer`, `result` or `attention` |
+| Assessment Session | `candidate(triggerId)` | The Eval that holds a Trigger, as its assessor sees it |
+| Assessment Session | `candidateDelivered(evalId)` | The Eval's candidate reached the assessment Session: its deadline counts from now |
+| Assessment Session | `decide(triggerId, outcome)` | Records an Eval Decision, or a direct Decision for an explicit request. Accept creates the Ticket, Mandate, Assignment, Subscriptions and acknowledgement atomically. An inferred candidate ignored from its card records `ignoredFromCard` before the supplied reason. While `followupOwners` still owns a human follow-up, only stop is allowed |
+| Assessment Session | `attach(ticketId, triggerId, note?)` | Routes a Trigger to a Ticket it points at, whose Executor then decides it as a follow-up, and ends the Eval that holds it, whose other Triggers wait for a fresh Eval; an ended Ticket resumes under its Mandate at once unless processing is paused. A follow-up an Executor still decides is refused, as is one routed back to the Ticket that handed it back |
+| Assessment Session | `requestStatus(ticketId)` | Asks a waiting Executor Session for its status, and answers whether it asked |
+| Assessment Session | `note(ticketId, text)` | Gives a Ticket's Executor a fact from other work as a text Input, which grants nothing |
+| Assessment Session, Executor | `reply(request)` | Queues a message for the Channel its purpose names: `acknowledgement`, `answer`, `result` or `attention` |
 | People | `stopTicket(ticketId, reason?)` | A person's stop, which withdraws the Mandate |
 | People | `retryTicket(ticketId)` | Ends the stalled Assignment of a Ticket that waits for a person after a `failed` or `blocked` Report, or whose Input delivery failed (`canRetry`), and starts a new one |
 | People | `reevaluate(triggerId)` | Queues a stored Trigger for a fresh Eval |
@@ -90,7 +90,7 @@ Callers receive only their role's `Pick` of the Engine: `EngineForSources`, `Eng
 | Executor | `followForContext(ticketId, thread)` | Subscribes an open Ticket to a related Thread for context: its messages reach the Ticket but lend it no follow-up strength and do not resume it |
 | Executor | `handback(ticketId, triggerId, reason)` | Records that the Ticket hands back a Trigger that reached it, with the reason its candidate carries, and queues it for a fresh Eval once no other Ticket decides it, if this Ticket did; it answers whether it queued it. A Ticket hands back each Trigger once and keeps its Subscription |
 | Executor | `assignmentInterrupted(ticketId, assignmentId)` | An Assignment was running when the host stopped: one interrupted mid-work, or one that received an Input after its latest Report, starts again with a recovery note and the Inputs delivered to it that its Executor Session did not take, as a retry does; one that had reported since keeps its Session. The DshExecutor reports each at start (`resume`), oldest Ticket first, and queues again a launch that waits |
-| Passes | `evaluateDue()` | Unless processing is paused: starts the Evals of the Threads whose queued Triggers wait, one per Thread with the Triggers queued meanwhile as one batch; queues the Triggers of an Eval past its deadline again, twice in a row, and records it `unavailable` the third time; and resumes the ended Tickets a person's message reached during a pause, if their Mandates still hold. An Eval whose candidate has not reached the main Session does not expire. While processing is paused, no Eval expires, and once it resumes each deadline moves later by the pause's length |
+| Passes | `evaluateDue()` | Unless processing is paused: starts the Evals of the Threads whose queued Triggers wait, one per Thread with the Triggers queued meanwhile as one batch; queues the Triggers of an Eval past its deadline again, twice in a row, and records it `unavailable` the third time; and resumes the ended Tickets a person's message reached during a pause, if their Mandates still hold. An Eval whose candidate has not reached the assessment Session does not expire. While processing is paused, no Eval expires, and once it resumes each deadline moves later by the pause's length |
 | Settings | `policyChanged(from, to, effects)` | Tells each live Ticket the change bears on how (`policyEffects` in `src/policy.ts`: a rule it was accepted under changed or no longer applies, its requester may no longer start work, or proactive work is no longer accepted), and restarts the Evals in progress under the new version |
 
 The Engine keeps batching, authorization, fan-out, resume and attention lifecycle rules private. Several shared predicates make these rules consistent:
@@ -171,11 +171,11 @@ Failures retry with exponential backoff. Throwing `Later` defers work without co
 
 | Kind | Handler | Does | At once | Retry |
 | --- | --- | --- | --- | --- |
-| `assessment` | MasterAssessor | Steers an Eval's candidate card into the main Session's turn, then tells the Engine it was delivered, which starts the Eval's deadline | 4, none while paused | 2 s doubling to 60 s |
+| `assessment` | MasterAssessor | Steers an Eval's candidate card into its Thread's assessment Session, then tells the Engine it was delivered, which starts the Eval's deadline | 4, none while paused | 2 s doubling to 60 s |
 | `launch` | DshExecutor | Launches a pending Assignment: prepare command, Executor Session, assignment message | The free worker slots, none while paused | A passing failure of the model provider or the network runs again after 5 s doubling to 300 s, three times; any other failure, and a failed prepare command, fails its Ticket. One held by a pause or by full worker slots tries again after 5 s |
 | `delivery` | DshExecutor | Hands a Ticket's waiting Inputs to its running Assignment, in order | 4, none while paused | 2 s doubling to 60 s; one that waits for a worker slot tries again after 2 s |
-| `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the main Session's turn | 1, in queue order | 2 s doubling to 60 s |
-| `notice` | Sessions | Injects a notice into the main Session without waking it | 1, in queue order | 2 s doubling to 60 s |
+| `relay` | Sessions | Steers a worker's report or question, or a person's follow-up, into the target Thread's assessment Session; a relay without a target is recorded only and wakes nothing | 1, in queue order | 2 s doubling to 60 s |
+| `notice` | Sessions | Injects a notice into the target Thread's assessment Session without waking it; a notice without a target is recorded only | 1, in queue order | 2 s doubling to 60 s |
 | `reply` | Outbox | Sends a message for a Channel through its Source, after the earlier messages of its Ticket to its conversation that have not failed three times; withdrawing the message cancels it | 1, none while paused | 5 s doubling to 300 s; one whose Source is off, or behind an earlier message, tries again after 5 s |
 
 Each kind has a health entry under its name. It reports an error once one of its effects failed three times in a row, except `delivery`, whose failures show on their Ticket instead. Relays keep their order, and so do notices; a failed one holds back the later ones of its kind.
@@ -208,9 +208,9 @@ Transient provider and network failures get three retries. Launches use effect b
 
 ### MasterAssessor
 
-`MasterAssessor` (`src/app/assessment.ts`) lets the main Session assess proactive candidates. `request` queues an assessment effect; `release` drops cached state when its Eval ends.
+`MasterAssessor` (`src/app/assessment.ts`) lets the Thread's assessment Session assess proactive candidates. `request` queues an assessment effect; `deliver` resolves `assess-<hash>` for the Eval's Thread and steers the candidate card into it; `release` drops cached state when its Eval ends.
 
-Its `context`, `read` and `decide` methods serve `orchestrator_eval`, `orchestrator_eval_read` and `orchestrator_eval_decide`. They provide bounded Thread context through `SourceRegistry.threadContext`, repository context, and decision submission. A kind without a context reader supplies only the Trigger and batch.
+Its `context`, `read` and `decide` methods serve `orchestrator_eval`, `orchestrator_eval_read` and `orchestrator_eval_decide`. They provide bounded Thread context through `SourceRegistry.threadContext`, repository context, and decision submission; an accept includes the short plan stored on the Ticket. A kind without a context reader supplies only the Trigger and batch.
 
 `assessmentOutcome` converts the model's answer for `Engine.decide`. Evals checks inferred acceptance against the current Policy again.
 
@@ -232,21 +232,21 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 ### Sessions
 
-`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
+`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. All of them are created in one DSH Workspace titled `SA`, at `<stateDir>`, so the panel never shows a Workspace per Ticket or an ungrouped dsh-superagent Session. `ensure` creates or reopens a Session with its role's model. `assess(thread)` resolves the one `assess-<hash>` Session for that Thread, titled `需求评估 <Thread>`, and reuses it for every message on the Thread; one Thread's assessment never receives another Thread's card. `workerSessionId(ticket.id)` names the Executor Session `worker-<ticket id>`. A worker keeps its own Ticket directory as its effective working directory through DSH's `workingDirectory` service while its Session header stays on the Workspace path. `install` follows agent events and registers prompts, skills and tools for managed Sessions. `reconcile`, run at startup, archives Sessions in dsh-superagent's workspace roots that are not a stored Thread's assessment Session or a still-live Ticket's worker, then removes legacy per-Ticket Workspace records that no longer hold a valid Session. This archives legacy `orchestrator-*` Sessions and workers of deleted Tickets, never deletes them, and keeps Session logs and directories; the dedicated `SA` Workspace and user Workspaces stay.
 
-`prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
+`prompt` delivers once per request id. `relay` and `notify` enqueue messages for a target Thread's assessment Session handled by the `relay` and `notice` effects; without `targetThread` they are recorded without waking a Session. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
 Each model request binds the Session to the current prompt revision. The revisions it used are stored durably: `promptVersion` identifies the active one and `mayRead` restricts which versions a worker can inspect. Registrations are tracked in one map per agent.
 
-`status` and `promptVersion` serve prompt pages. Saves go through `Prompts.save` and notify the main Session. `modelRetry` exposes model-budget retry state.
+`status` and `promptVersion` serve prompt pages. Saves go through `Prompts.save` and notify the relevant assessment Sessions. `modelRetry` exposes model-budget retry state.
 
 ### Glue
 
 | Glue | Translates |
 | --- | --- |
 | `src/app/runtime.ts` | The composition root: builds the parts with the interfaces they use, registers the routes and the Source host, and starts and stops dsh-superagent |
-| `src/app/notices.ts` | Domain events and worker reports into notices and relays for the main Session |
-| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
+| `src/app/notices.ts` | Domain events and worker reports into notices and relays for the target Thread's assessment Session |
+| `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of assessment Sessions and Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
 | `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
@@ -290,9 +290,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Path | Responsibility |
 | --- | --- |
-| `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
+| `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses; `DSH_DISABLE_SUPERAGENT=1` skips it in safe mode |
+| `src/worker-shell-env.ts` | A worker/router preset's isolated shell wrapper: adds the deployment's git configuration and CLI shims to every command without mutating the host environment |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
-| `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
+| `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the assessment Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
 | `src/limits.ts` | The limits of the values a person sets, which the settings schemas check and the panel's fields offer |
@@ -317,7 +318,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
-| `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
+| `src/app/notices.ts` | The assessment Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
@@ -330,6 +331,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
 | `src/app/sessions.ts` | Sessions |
+| `src/app/session-policy.ts` | The exact Session set dsh-superagent owns and workspace-root containment for orphan reconciliation; `Sessions` keeps every Session in its single `SA` Workspace |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
@@ -340,7 +342,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/cards.ts` | Compact cards of Triggers, Tickets, Threads and Decisions for models, the closed set of ticket card states `TICKET_STATES`, and `textPage` |
 | `src/app/resources.ts` | `RESOURCES` and `readResource`: what `orchestrator_read` reads, for each role |
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
-| `src/app/tools/main.ts` | The main Session's tools |
+| `src/app/tools/main.ts` | The assessment Session's tools |
 | `src/app/tools/executor.ts` | An Executor Session's tools |
 | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
@@ -354,7 +356,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
-| `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
+| `src/infra/environment.ts` | The worker environment: command shims, the git configuration and credential helper, `workerEnvironment`, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
@@ -419,14 +421,15 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
 | `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
-| `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
+| `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the assessment Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the assessment Session's note |
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
+| `tests/session-policy.spec.ts` | The exact Session set dsh-superagent owns, and managed workspace-root containment |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
-| `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
+| `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other assessment Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
-| `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
+| `tests/http.spec.ts` | The DSH Connection Host/Origin and authentication fence, the `x-orchestrator-request` CSRF header, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
@@ -459,7 +462,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `thread` | Threads: Subscriptions, the Tickets that follow it for context, queued Triggers, the Eval in progress, the count of its expiries and `meta`; the generated columns `active`, set while Triggers are queued or an Eval runs, and `subscribed`, its Source while a Ticket subscribes to it | Engine; Sources write `meta` |
 | `ticket` | Tickets with their Mandate, origin, execution, Assignments, Channels, Inputs and the Threads they follow; the generated columns `open`, set while it has not ended, and `active`, set while Inputs are undelivered or the latest Assignment is pending or running | Engine |
 | `decision` | Decisions, by Thread | Engine |
-| `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
+| `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the assessment Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `kv` | Every other record, by key | The part that names it |
 
@@ -472,7 +475,6 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Schema | Current schema version |
 | Settings versions | `settings-revision`, `settings-version:<n>`, `settings-block-revision:<block>`; snapshots include origin, Policy version and affected Tickets |
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
-| Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
@@ -487,9 +489,9 @@ Nothing deletes old records yet, so these grow without bound: the `trigger`, `di
 
 ## Model-facing interfaces
 
-### Main Session tools
+### Assessment Session tools
 
-The main Session has 14 application tools:
+The assessment Session has 14 application tools:
 
 | Purpose | Tools |
 | --- | --- |
@@ -504,15 +506,15 @@ The main Session has 14 application tools:
 
 Settings saves select `policy`, `eval`, `executor`, `pause`, or `source`; the last also names its Source id. A prompt save with `preview: true` composes text without saving.
 
-The main Session also has DeepSeek Harness's `skill`, `bash`, `read`, `read_image`, `job_output`, `job_list` and `job_kill`. Avoiding code reads is a prompt rule, not a tool restriction.
+The assessment Session also has DeepSeek Harness's `skill`, `bash`, `read`, `read_image`, `job_output`, `job_list` and `job_kill`. Avoiding code reads is a prompt rule, not a tool restriction.
 
 ### Presets and wait limits
 
-New main Sessions use `dsh-superagent-router` (`ROUTER_PRESET`). Shell commands and job waits return after 5 seconds. If the Web UI selects another preset before the first turn, `Sessions` restores this preset, or `WORKER_PRESET` for a worker.
+New assessment Sessions use `dsh-superagent-router` (`ROUTER_PRESET`). Shell commands and job waits return after 5 seconds. If the Web UI selects another preset before the first turn, `Sessions` restores this preset, or `WORKER_PRESET` for a worker.
 
-The `noWait` guard in `src/app/sessions.ts` refuses main-Session shell commands that invoke `sleep` at a command position, shell `timeoutMs` above 30 seconds, and `job_output` waits above 5 seconds. Reports and job results arrive automatically, so waiting only delays incoming candidates.
+The `noWait` guard in `src/app/sessions.ts` refuses assessment-Session shell commands that invoke `sleep` at a command position, shell `timeoutMs` above 30 seconds, and `job_output` waits above 5 seconds. Reports and job results arrive automatically, so waiting only delays incoming candidates.
 
-Existing main Sessions on `standard` also need explicit timeouts for foreground commands and job waits; otherwise that preset's defaults hold the step for 60 and 30 seconds respectively. The host determines the current preset through `presetForSession`, falls back to the Session projection or header, and assumes `standard` if it cannot read the value.
+Existing assessment Sessions on `standard` also need explicit timeouts for foreground commands and job waits; otherwise that preset's defaults hold the step for 60 and 30 seconds respectively. The host determines the current preset through `presetForSession`, falls back to the Session projection or header, and assumes `standard` if it cannot read the value.
 
 ### Executor tools
 
@@ -523,13 +525,13 @@ Each Executor has six application tools:
 | `orchestrator_read` | Read resources available to its own Ticket |
 | `orchestrator_ack` | Acknowledge a request |
 | `orchestrator_report` | Report progress or an outcome, binding a pull request under the pull-request rules |
-| `orchestrator_thread_unrelated` | Drop an unrelated attached Thread, hand back its owned follow-ups and tell the main Session why |
-| `orchestrator_thread_follow` | Subscribe to a related Thread for context and tell the main Session |
+| `orchestrator_thread_unrelated` | Drop an unrelated attached Thread, hand back its owned follow-ups and tell the assessment Session why |
+| `orchestrator_thread_follow` | Subscribe to a related Thread for context and tell the assessment Session |
 | `orchestrator_trigger_handback` | Hand back a message once, with a reason carried by its candidate |
 
 A hand-back returns `queued: false` if another Ticket still owns the message, or this Ticket never owned it. For example, a bot message went to Eval independently.
 
-The worker preset is defined in `cordis.patch.yml` and selected through `WORKER_PRESET`. `WORK_TOOLS` in `src/app/sessions.ts` retains available file, search, shell, job, web, skill, todo and subagent tools. Workers do not receive tools for asking or presenting to a person, changing the profile, scheduling work outside worker slots, starting or messaging other Sessions, or editing external documents. Tool calls are refused after the Ticket ends.
+The worker preset is defined in `cordis.patch.yml` and selected through `WORKER_PRESET`. `WORK_TOOLS` in `src/app/sessions.ts` retains file, search, shell, job, web, skill and todo tools. Workers do not receive tools for asking or presenting to a person, changing the profile, scheduling work outside worker slots, starting or messaging other Sessions or subagents, or editing external documents. Tool calls are refused after the Ticket ends.
 
 ### Result shapes and assessment context
 
@@ -580,16 +582,16 @@ The names `event/`, `task/` and `observation/` of earlier versions still resolve
 
 ### Messages delivered to Sessions
 
-These messages are steered into the main Session's turn:
+These messages are steered into the assessment Session's turn:
 
 | Message | Content |
 | --- | --- |
 | Candidate | Batch Trigger cards, Thread, `related_tickets`, `tickets_total`, `delivered_to`, referenced Tickets from Issue/PR links, `handed_back` reasons and the next action |
-| `follow_up` | One message as its Executor sees it, `replies_to`, receiving Tickets, and the reminder that Executors decide it while the main Session may only stop work |
+| `follow_up` | One message as its Executor sees it, `replies_to`, receiving Tickets, and the reminder that Executors decide it while the assessment Session may only stop work |
 | `worker_report` | Ticket card, originating Trigger, state and summary up to 600 characters; `chars` and a read pointer when truncated |
 | `worker_attention` | Ticket card carrying the question |
 
-Other notices are injected without waking the main Session: `ticket_ended`, `settings_saved`, prompt saves, Trigger requeues, dropped Subscriptions and context follows. A settings notice names the block, changed paths and `read: settings/<block>`. The main Session receives no redundant notice for a save, requeue, unsubscribe or attach it performed itself.
+Other notices are injected without waking the assessment Session: `ticket_ended`, `settings_saved`, prompt saves, Trigger requeues, dropped Subscriptions and context follows. A settings notice names the block, changed paths and `read: settings/<block>`. The assessment Session receives no redundant notice for a save, requeue, unsubscribe or attach it performed itself.
 
 Workers receive assignments and Inputs inline. The first message includes the title, up to 1,500 characters of assignment text and the source Trigger card. Inputs carry a Trigger card with up to 600 characters and `replies_to`, or plain Input text. Read pointers appear only for truncated content.
 
@@ -609,7 +611,7 @@ A settings save that changes a Source field setup reads, such as an account's CL
 
 ## Reviewing a change against real data
 
-Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
+Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the assessment Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
 
 ## Open questions
 

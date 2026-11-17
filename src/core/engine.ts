@@ -84,13 +84,13 @@ export class Engine {
     }
   }
 
-  // The main Session
+  // The assessment Session
 
   /** The candidate of the Eval that holds a Trigger, as its assessor sees it; undefined while no Eval holds it. */
   candidate(triggerId: string): Candidate | undefined { return this.evals.candidate(triggerId) }
   /**
    * Decide a Trigger: the Eval that holds it, or a direct Eval of it alone when none does, such as a person's explicit
-   * request the main Session routes. A proactive candidate is accepted only in `auto` mode with enabled rules its assessment
+   * request the assessment Session routes. A proactive candidate is accepted only in `auto` mode with enabled rules its assessment
    * matched, and a Trigger that already started a ticket returns that ticket's Decision. An invalid stop is recorded as
    * `ignore`; one judged under an older Policy as `unavailable`.
    * @throws UserError when the Trigger is unknown or not admissible, `outcome.evalId` names an Eval that has finished, a
@@ -134,7 +134,7 @@ export class Engine {
    */
   reply(request: ReplyRequest): Reply { return this.repo.atomic(() => this.replies.reply(request)) }
 
-  // People, through the panel or the main Session
+  // People, through the panel or the assessment Session
 
   /** The assessor delivered an Eval's candidate to its Session: the Eval's deadline counts from now. */
   candidateDelivered(evalId: string): void { this.repo.atomic(() => { this.evals.delivered(evalId, this.options.policy()) }) }
@@ -193,6 +193,14 @@ export class Engine {
   turnEnded(ticketId: string, assignmentId: string): void {
     this.repo.atomic(() => { this.assignments.turnEnded(ticketId, assignmentId) })
   }
+  /** End an Assignment because its phase finished, while keeping the Ticket open for a later Input. */
+  finishAssignment(ticketId: string, assignmentId: string, reason: string): void {
+    this.repo.atomic(() => { this.tickets.finishAssignment(ticketId, assignmentId, reason) })
+  }
+  /** Start the next phase of an open Ticket whose latest Assignment ended with Inputs still waiting. */
+  resumePhase(ticketId: string): void {
+    this.repo.atomic(() => { this.tickets.resumePhase(ticketId) })
+  }
   /** The Executor's fact that delivering Inputs to the Assignment that runs the ticket failed; the ticket shows it until a delivery succeeds. */
   deliveryFailed(ticketId: string, assignmentId: string, error: string): void {
     this.repo.atomic(() => { this.assignments.deliveryFailed(ticketId, assignmentId, error) })
@@ -215,7 +223,7 @@ export class Engine {
     return this.repo.atomic(() => this.tickets.followForContext(ticketId, thread))
   }
   /**
-   * A fact the main Session gives an open ticket's Executor: see `Tickets.note`.
+   * A fact the assessment Session gives an open ticket's Executor: see `Tickets.note`.
    * @throws UserError when the ticket is unknown or has ended.
    */
   note(ticketId: string, text: string): Ticket { return this.repo.atomic(() => this.tickets.note(ticketId, text)) }
@@ -259,12 +267,12 @@ export class Engine {
 
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
-/** What the main Session asks of the Engine. */
+/** What the assessment Session asks of the Engine. */
 export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
-/** What people ask of the Engine, through the panel or the main Session. */
+/** What people ask of the Engine, through the panel or the assessment Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
-export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'finishAssignment'
+  | 'resumePhase' | 'deliveryFailed' | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>

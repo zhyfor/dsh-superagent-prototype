@@ -1,6 +1,6 @@
-/** Formats background notices and steering relays delivered to the main Session via the effect queue. */
+/** Formats background notices and steering relays delivered to the assessment Session via the effect queue. */
 import { randomUUID } from 'node:crypto'
-import { followupOwners, key, liveTicket, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
+import { followupOwners, key, liveTicket, threadKey, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
 import { triggerMessage } from '../executor/dsh.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { repliedTo } from './links.ts'
@@ -8,7 +8,7 @@ import type { Store } from './store.ts'
 import { ticketCard } from './cards.ts'
 
 /**
- * A background notice tuple for the main Session: `[name, value, summary]`, where `name` is the coalescing key in
+ * A background notice tuple for the assessment Session: `[name, value, summary]`, where `name` is the coalescing key in
  * `Effects` (a newer notice with the same `name` overwrites an unsent waiting one, rather than permanently deduplicating future notices).
  */
 export type Notice = readonly [name: string, value: Record<string, unknown>, summary: string]
@@ -73,9 +73,15 @@ export const threadFollowedNotice = (ticketId: string, thread: string, reason: s
     note: 'For context only: its messages reach this ticket and grant nothing.' },
     `Ticket ${ticketId} follows thread ${thread} for context: ${reason}`)
 
-/** Steering relay payload for the main Session: `id` is the request ID that makes delivery idempotent, and `text` is the message body. */
-export interface Relay { id: string; text: string }
-/** What a follow-up asks of the main Session: nothing but a stop the person asks for, since its ticket's worker decides it. */
+/** Steering relay payload for an assessment Session: `id` makes delivery idempotent, `text` is the body, and `targetThread` names the Session's Thread. */
+export interface Relay { id: string; text: string; targetThread?: string }
+/** The Thread of a ticket's origin Trigger, whose assessment Session receives its relays and notices. */
+export function ticketThread(store: Pick<Store, 'triggers'>, ticket: Pick<Ticket, 'origin'>): string | undefined {
+  const trigger = store.triggers.get(ticket.origin.triggerId)
+  const ref = trigger?.threads[0]
+  return ref ? threadKey(ref) : undefined
+}
+/** What a follow-up asks of the assessment Session: nothing but a stop the person asks for, since its ticket's worker decides it. */
 const FOLLOWUP_NOTE = 'Its ticket\'s worker has it and decides; act only if the person asks to stop the work '
   + '(orchestrator_route kind stop with this trigger_id).'
 /**
@@ -93,37 +99,39 @@ export function followupNotice(store: Store, sources: SourceRegistry, triggerId:
     return ticket && liveTicket(ticket) ? [{ ticket_id: id, title: ticket.title, state: ticketCard(ticket).state, ...context }] : []
   })
   if (!tickets.length) return undefined
-  return followupRelay(triggerMessage(trigger, {}, undefined, repliedTo({ store, sources }, trigger)), tickets)
+  return followupRelay(triggerMessage(trigger, {}, undefined, repliedTo({ store, sources }, trigger)), tickets,
+    trigger.threads[0] ? threadKey(trigger.threads[0]) : undefined)
 }
 /**
- * A person's message that reached tickets, as the main Session hears of it: the message as their workers read it, and the
- * tickets it reached with their state. Their workers decide it; the main Session may only stop the work on it.
+ * A person's message that reached tickets, as the assessment Session hears of it: the message as their workers read it, and the
+ * tickets it reached with their state. Their workers decide it; the assessment Session may only stop the work on it.
  */
 export function followupRelay(message: { trigger_id: string },
-  tickets: readonly { ticket_id: string; title: string; state: string; context?: boolean }[]): Relay {
+  tickets: readonly { ticket_id: string; title: string; state: string; context?: boolean }[], targetThread?: string): Relay {
   return { id: `followup:${message.trigger_id}`, text: JSON.stringify({ kind: 'follow_up', ...message, delivered_to: tickets,
-    note: FOLLOWUP_NOTE }) }
+    note: FOLLOWUP_NOTE }), ...targetThread ? { targetThread } : {} }
 }
-/** Formats a worker report relay for the main Session (truncating summaries over 600 characters behind `ticket/<id>/result`); `replyTo` names the human question trigger it answers. */
-export function resultRelay(ticket: Ticket, state: string, text: string, replyTo?: string): Relay {
+/** Formats a worker report relay for the assessment Session (truncating summaries over 600 characters behind `ticket/<id>/result`); `replyTo` names the human question trigger it answers. */
+export function resultRelay(ticket: Ticket, state: string, text: string, replyTo?: string, targetThread?: string): Relay {
   const id = key('worker-result', ticket.id, ticket.updatedAt, text)
   const summary = text.length > 600 ? { summary: text.slice(0, 600), chars: text.length } : { summary: text }
   const report = { kind: 'worker_report', ticket: brief(ticket), trigger_id: ticket.origin.triggerId, state, ...replyTo ? { answer_to: replyTo } : {},
     ...summary, read: `ticket/${ticket.id}/result` }
-  return { id: `report:${id}`, text: JSON.stringify(report) }
+  return { id: `report:${id}`, text: JSON.stringify(report), ...targetThread ? { targetThread } : {} }
 }
 /**
  * Converts a worker report recorded on `ticket` into a main-Session relay: a question for a person produces a
  * `worker_attention` relay, and a result, blocker, end, or answer to a question produces a `worker_report` relay, while
  * routine `progress` reports without `answers` stay internal.
- * @returns The steering `Relay`, or `undefined` when the report is not relayed to the main Session.
+ * @returns The steering `Relay`, or `undefined` when the report is not relayed to the assessment Session.
  */
-export function reportRelay(ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'answers'>): Relay | undefined {
+export function reportRelay(ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'answers'>, targetThread?: string): Relay | undefined {
   const asked = report.question ? ticket.attention : undefined
   if (asked) {
     return { id: `attention:${ticket.id}:${asked.id}`,
-      text: JSON.stringify({ kind: 'worker_attention', ticket: brief(ticket), state: report.state, read: `ticket/${ticket.id}/result` }) }
+      text: JSON.stringify({ kind: 'worker_attention', ticket: brief(ticket), state: report.state, read: `ticket/${ticket.id}/result` }),
+      ...targetThread ? { targetThread } : {} }
   }
   if (report.state === 'progress' && !report.answers) return undefined
-  return resultRelay(ticket, report.state, report.summary, report.answers)
+  return resultRelay(ticket, report.state, report.summary, report.answers, targetThread)
 }

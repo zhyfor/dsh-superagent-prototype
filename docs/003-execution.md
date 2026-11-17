@@ -22,29 +22,34 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`. Every dsh-superagent Session, the assessment Sessions and all Executor Sessions, belongs to one DSH Workspace titled `SA`; a worker's effective working directory is its Ticket directory. At startup the Session policy removes legacy per-Ticket Workspace records once they hold no valid Session, keeping their directories and Session logs.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
-The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
+The assessment Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for assessment and routing. Sessions retain the preset selected at creation. One Ticket has exactly one Executor Session, and the assessment Session for that Ticket's originating Thread assesses its work, so workers receive no tools for starting subagents.
+
+### Assessment Sessions
+
+There is no resident global orchestrator Session. The first candidate or message on a Thread creates `assess-<hash of the Thread key>` in the `SA` Workspace, and every later message on that Thread reuses it; a different Thread gets a different assessment Session. The Session is titled `需求评估 <Thread>`, runs in the `/D` assessment phase and must not modify files. An accepted Eval carries a short plan (goal, scope, files or areas, steps, acceptance and rollback), which the assignment text gives directly to the worker after the plan is confirmed.
+
+At startup reconciliation keeps only the assessment Session of each stored Thread and the `worker-<ticket id>` of each live Ticket. Legacy `orchestrator-*` Sessions and workers of deleted Tickets are archived, never deleted, so their logs stay. A worker in `/G` reads the workspace `AGENTS.md`, executes the confirmed plan and verifies the result without re-discussing it or re-verifying every path it names.
 
 ### Background work and worker slots
 
-When a turn ends with shell jobs or subagents still running, the Ticket keeps its worker slot and stays working. It is not reported as waiting, and the main Session receives no waiting report. A completed job or subagent wakes the Executor with its result in the same slot. Once a turn ends with no background work, the Executor reports waiting normally.
+When a turn ends with shell jobs still running, the Ticket keeps its worker slot and stays working. It is not reported as waiting, and the assessment Session receives no waiting report. A completed job wakes the Executor with its result in the same slot. Once a turn ends with no background work, the Executor reports waiting normally.
 
-After each turn, background work has at most 30 minutes to finish. At that limit, shell jobs are killed and the Ticket is reported waiting. The report includes the Executor's last words and which jobs were killed or subagents remain active. Subagents are allowed to continue. The Executor reads killed-job results on its next turn.
+After each turn, background work has at most 30 minutes to finish. At that limit, shell jobs are killed and the Ticket is reported waiting. The report includes the Executor's last words and which jobs were killed. The Executor reads killed-job results on its next turn.
 
 A handoff to a person frees the slot immediately and leaves the Report in effect. This applies after a `ready` Report or a question, unless another Input arrived since, and after any `blocked` or `failed` Report.
 
-At handoff, subagents stop. Shell jobs, such as a server offered for review, may continue until the Assignment ends. They hold no slot and are exempt from the 30-minute limit, including after later turns. Their completion does not wake the Executor; it reads the results on its next turn.
+At handoff, shell jobs, such as a server offered for review, may continue until the Assignment ends. They hold no slot and are exempt from the 30-minute limit, including after later turns. Their completion does not wake the Executor; it reads the results on its next turn.
 
 A person can also start a turn by writing directly in the Executor Session. Its background work follows the same rules.
 
-When an Assignment ends, its shell jobs are killed without waking the Session. Its subagents are released, and any completion turns they wake are dropped. The replacement Assignment and its waiting Inputs start after that shutdown finishes.
+When an Assignment ends, its shell jobs are killed without waking the Session. The replacement Assignment and its waiting Inputs start after that shutdown finishes.
 
 Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note.
 
-Worker subagents, including nested ones, use DeepSeek Harness's `standard` preset with the worker's permissions. They retain only the worker's allowed work tools, and lose those tools when the Ticket ends. Under `standard`, a shell command moves to the background after 60 seconds. A subagent's jobs are killed when it ends.
 
 ### Preparing a Ticket directory
 
@@ -73,7 +78,7 @@ The prepare command and Executor instructions receive the same execution variabl
 | `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
 | `DSH_SUPERAGENT_FEISHU_BOT`, `DSH_SUPERAGENT_FEISHU_CHAT` | Feishu | The bot, and the chat that started the Ticket |
 
-Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
+Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the assessment Session cannot change the configured shell command.
 
 Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
 
@@ -107,7 +112,7 @@ Chat Channels receive one final notice about the pull-request outcome. GitHub al
 
 ### Follow-ups and context Threads
 
-The Executor decides human follow-ups on its Ticket's own Threads. It handles in-scope requests and hands back requests beyond its scope or for another Ticket. Once no Executor owns the message, it becomes a candidate for the main Session. The main Session may otherwise act on the follow-up only to stop work at the person's request.
+The Executor decides human follow-ups on its Ticket's own Threads. It handles in-scope requests and hands back requests beyond its scope or for another Ticket. Once no Executor owns the message, it becomes a candidate for the assessment Session. The assessment Session may otherwise act on the follow-up only to stop work at the person's request.
 
 An Input counts as read after the Session takes it into a step and subsequently reports or ends a turn. When a Ticket ends, unread messages that were not acknowledged, answered or handed back return to Eval, as described in [002 Authorization](002-authorization.md). Read messages left without action, such as thanks, do not.
 
@@ -152,13 +157,13 @@ Sessions, directories, Subscriptions, pending messages and the stored work below
 A retry or a restart gives the new Assignment again the messages delivered to the Assignment it replaces that its Executor Session did not take, which a cancel or a cut-off step may have dropped; a copy still waiting in the Session, kept by a restart or persisted across a crash, is taken out before the new Assignment's first message, so the new delivery is the only copy.
 ### Stored work
 
-What dsh-superagent does after a decision, such as relaying a candidate, a follow-up or a report to the main Session, launching an Assignment or delivering an Input, is stored first and done afterwards.
+What dsh-superagent does after a decision, such as relaying a candidate, a follow-up or a report to the assessment Session, launching an Assignment or delivering an Input, is stored first and done afterwards.
 
 A relay or a delivery that fails, such as when its Session cannot be reached, is retried after 2 seconds, then after a delay that doubles up to a minute; a launch that fails fails its Ticket, unless the failure was a passing one, as above.
 
 Each kind of work reports an error among the overview's system problems only after one item failed three times in a row; a failed Input delivery shows on its Ticket instead.
 
-Relays to the main Session keep their order, and so do notices; a failed one holds back the later ones of its kind.
+Relays to a Thread's assessment Session keep their order, and so do notices; a failed one holds back the later ones of its kind.
 ### Source failure
 
 The GitHub Source reads each Issue, pull request and Thread on its own: a failed read keeps its error on its Thread, is read again on the next poll, and counts towards an error of the Source, which it reports after three failed polls in a row by default; any successful poll resets the count.

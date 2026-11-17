@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
+import { assessSessionId } from '../src/app/session-policy.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
@@ -36,6 +37,7 @@ import { decisionList, search, threadDetail, threadList } from '../src/app/views
 import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
 
 let runtime: Runtime
+declare module '../src/app/runtime.ts' { interface Runtime { /** Test-only alias; production has no global Session. */ readonly masterId: string } }
 const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
 const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
 let directory: string
@@ -75,6 +77,11 @@ async function receive(trigger: Trigger, target = runtime) {
   return result
 }
 let services: Record<string, unknown>
+/** DSH workspace registry the Runtime reconciles; tests can add workspaces and orphans. */
+let workspaceRegistry: { create: ReturnType<typeof vi.fn>; list: () => { id: string; path: string; sessionIds: string[] }[];
+  archivedSessionIds: string[]; archiveSession: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> }
+/** DSH's working-directory service, which moves a worker's tools into its Ticket directory. */
+let workingDirectory: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> }
 /** DSH's job registry the Runtime's Executor reads its workers' shell jobs from. */
 let jobs: ReturnType<typeof jobRegistry>
 /** What worker commands of the startup checks print, by argv; an Error makes the command fail with its message. */
@@ -102,12 +109,20 @@ function seed(store: Store, accounts: Accounts = {}): void {
   store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
+/** Test-only alias for the assessment Session most recently created: production has no global Session. */
+async function aliasMaster(value: Runtime): Promise<Runtime> {
+  await value.sessions.assess('test:main')
+  const seeded = assessSessionId('test:main')
+  Object.defineProperty(value, 'masterId', { get: () => deliveries.mock.calls.map(([call]) => call.sessionId).filter(id => id.startsWith('assess-')).at(-1)
+    ?? [...agents.keys()].filter(id => id.startsWith('assess-')).at(-1) ?? seeded })
+  return value
+}
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
   await runtime.stop()
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store, accounts); store.close()
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  runtime = new Runtime(ctx, testMachine({ stateDir: directory, ...machine }), restarts)
+  runtime = await aliasMaster(new Runtime(ctx, testMachine({ stateDir: directory, ...machine }), restarts))
   return runtime
 }
 let deliveries: ReturnType<typeof vi.fn<(request: { sessionId: string; mode: 'queue' | 'steer'; id: string; text: string }) => void>>
@@ -203,18 +218,47 @@ beforeEach(async () => {
     inspect: vi.fn(async () => ({ events: [] })),
   }
   jobs = jobRegistry()
-  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
+  workspaceRegistry = { create: vi.fn(async (cwd: string, title?: string) => ({ id: cwd, title, setTitle: vi.fn(async () => {}),
+    attachSession: vi.fn(async () => {}) })), list: () => [], archivedSessionIds: [], archiveSession: vi.fn(async () => {}), delete: vi.fn(async () => {}) }
+  workingDirectory = { get: vi.fn(() => ''), set: vi.fn(async (_agent: unknown, path: string) => path) }
+  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry, workingDirectory, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, connection: { requestRejection: () => undefined }, jobs: jobs.service }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
   runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts)
   await runtime.ready
+  await aliasMaster(runtime)
   // Source kinds are normally registered by plugins that are not loaded in unit tests.
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   runtime.store.saveSettings({ ...runtime.store.settings(), policy: { ...runtime.store.settings().policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } }, eval: { ...runtime.store.settings().eval, mode: 'auto' }, sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT() } }, feishu: { enabled: true, config: { cli: BOT(), chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
 })
 afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
+
+it('reuses one assessment Session for every message on a Thread and creates a new one for a new Thread', async () => {
+  const one = feishu('1', '@bot 修一')
+  const same = [feishu('2', '@bot 修二', { root_id: 'om_1' }), feishu('3', '@bot 修三', { root_id: 'om_1' })]
+  const other = feishu('4', '@bot 另一件事')
+  runtime.receive(one); for (const trigger of same) runtime.receive(trigger)
+  await runtime.idle()
+  const first = assessSessionId(threadKey(one.threads[0]!))
+  await vi.waitFor(() => expect(agents.get(first)).toBeDefined())
+  await runtime.idle()
+  expect(controller.create.mock.calls.filter(([request]) => request.sessionId === first)).toHaveLength(1)
+  runtime.receive(other); await runtime.idle()
+  const second = assessSessionId(threadKey(other.threads[0]!))
+  await vi.waitFor(() => expect(agents.get(second)).toBeDefined())
+  expect(second).not.toBe(first)
+})
+it('keeps every Session it creates in the single SA Workspace while running a worker in its Ticket directory', async () => {
+  const { ticket } = await acceptedTicket()
+  expect(workspaceRegistry.create).toHaveBeenCalledTimes(1)
+  expect(workspaceRegistry.create).toHaveBeenCalledWith(directory, 'SA')
+  for (const [request] of controller.create.mock.calls) expect(request.workspaceId).toBe(directory)
+  expect(workingDirectory.get).toHaveBeenCalled()
+  expect(workingDirectory.set).toHaveBeenCalledWith(expect.objectContaining({ id: expect.stringMatching(/^worker-/) }), ticket.execution!.directory,
+    expect.anything())
+})
 
 it('relays an explicit member mention as a candidate and creates the ticket, acknowledgement, subscription and worker on accept', async () => {
   const { trigger, ticket, sessionId } = await acceptedTicket()
@@ -570,7 +614,8 @@ it('lets an Executor drop only its own ticket from a thread it finds unrelated, 
   // An attached thread that turns out to be about something else, which another ticket also follows.
   const attached = { source: 'feishu', id: 'oc_side:om_side' }
   subscribe(ticket.id, attached); subscribe(other.ticket.id, attached)
-  const inject = agents.get(runtime.masterId)!.inject
+  const assessor = assessSessionId(threadKey(trigger.threads[0]!))
+  const inject = agents.get(assessor)!.inject
   vi.mocked(inject).mockClear()
   expect(await runTool(sessionId, 'orchestrator_thread_unrelated', { thread: 'feishu:oc_side:om_side', reason: 'It discusses the login page, not this regression.' })).toEqual({ removed: true, thread: 'feishu:oc_side:om_side' })
   expect(runtime.store.threads.get('feishu:oc_side:om_side')!.subscriptions).toEqual([other.ticket.id])
@@ -742,13 +787,13 @@ it('counts every step of the day\'s flow over the same arriving messages and lis
   expect(decisionList(viewsOf(runtime), ['accept', 'reopen'], 0, 10, new Date(Date.now() + 60_000).toISOString()).items).toEqual([])
 })
 
-it('queues a requeued trigger visibly and tells the orchestrator', async () => {
+it('queues a requeued trigger visibly, and a queued notice wakes no Session', async () => {
   const stranger = commentTrigger({ id: 3, body: 'looks wrong', user: { login: 'someone' }, html_url: 'https://github.com/acme/widgets/pull/8#issuecomment-3', created_at: '2026-09-09T00:00:00Z' }, { number: 8, isPr: true }, 'conversation', 'agent-bot')
   await receive(stranger)
   runtime.store.saveSettings({ ...runtime.store.settings(), paused: true })
   expect(runtime.engine.reevaluate(stranger.id)).toBe(true)
   expect(threadDetail(viewsOf(runtime), 'github:8', undefined, 50)!.timeline[0]!.disposition).toMatchObject({ queued: true })
-  await vi.waitFor(() => expect(agents.get(runtime.masterId)!.inject).toHaveBeenCalled())
+  expect(agents.get(assessSessionId(threadKey(stranger.threads[0]!)))).toBeUndefined()
 })
 
 it('asks a question where the human message that raised it was written, not in the ticket\'s original conversation', async () => {
@@ -849,11 +894,11 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":false}\n'
   await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
-  // The agent CLI runs in the workers' environment: without the shims on PATH.
-  const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
-  expect(check[0]).toBe('env')
-  expect(check[1]!.startsWith('PATH=')).toBe(true)
-  expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(join(directory, 'worker-bin'))
+  // The agent CLI runs in the workers' environment, which is passed explicitly and never mutates the host's process.env.
+  const check = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; env?: Record<string, string> })
+    .find(spec => spec.argv.includes(AGENT()))!
+  expect(check.env?.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
+  expect(check.env?.GIT_CONFIG_GLOBAL).toBe(workerGitConfig(directory))
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
@@ -954,7 +999,7 @@ it('pauses and resumes processing as its own action, a setting outside every blo
   expect(runtime.store.settings().paused).toBe(false)
 })
 
-it('runs setup again while the Feishu bot check failed, and restores the process environment when git fails its check', async () => {
+it('runs setup again while the Feishu bot check failed, and never mutates the process environment when git fails its check', async () => {
   answers[`${BOT()} config strict-mode`] = 'strict-mode: off (source: profile)'
   const next = await restart()
   await next.ready
@@ -970,7 +1015,7 @@ it('runs setup again while the Feishu bot check failed, and restores the process
   expect(process.env.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
 })
 
-it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {
+it('writes worker shims and the agent environment from the configuration only, and never mutates the process environment', async () => {
   const bin = join(directory, 'worker-bin')
   expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain(`exec '${BOT()}'`)
@@ -982,9 +1027,13 @@ it('writes worker shims and the agent environment from the configuration only, a
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
   expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
-  expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
-  expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
-  expect(process.env.PATH?.split(':')[0]).toBe(bin)
+  const worker = subprocess.spawn.mock.calls.map(([spec]) => spec as { env?: Record<string, string> })
+    .find(spec => spec.env?.GIT_CONFIG_GLOBAL === workerGitConfig(directory) && spec.env?.PATH?.startsWith(`${bin}:`))!
+  expect(worker.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
+  expect(worker.env?.GIT_AUTHOR_NAME).toBeUndefined()
+  expect(worker.env?.PATH?.split(':')[0]).toBe(bin)
+  expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+  expect(process.env.PATH?.split(':')).not.toContain(bin)
   await next.stop()
   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
   expect(process.env.PATH?.split(':')).not.toContain(bin)
@@ -1347,7 +1396,8 @@ it('tells the main Session of each requeue of the same Trigger', async () => {
   const stranger = commentTrigger({ id: 4, body: 'still wrong', user: { login: 'someone' }, html_url: 'https://github.com/acme/widgets/pull/8#issuecomment-4', created_at: '2026-09-09T00:00:00Z' },
     { number: 8, isPr: true, url: 'https://github.com/acme/widgets/pull/8' }, 'conversation', 'agent-bot')
   await receive(stranger)
-  const requeued = () => agents.get(runtime.masterId)!.inject.mock.calls.filter(([message]) => JSON.stringify(message).includes('trigger_requeued')).length
+  await runtime.sessions.assess('github:8')
+  const requeued = () => agents.get(assessSessionId(threadKey(stranger.threads[0]!)))!.inject.mock.calls.filter(([message]) => JSON.stringify(message).includes('trigger_requeued')).length
   expect(runtime.engine.reevaluate(stranger.id)).toBe(true)
   await runtime.idle()
   expect(runtime.engine.reevaluate(stranger.id)).toBe(true)
@@ -1412,7 +1462,7 @@ it('releases the database and the state directory lock when it fails to start, s
   fixed.prepare('UPDATE kv SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema')
   fixed.close()
   // A lock kept by the failed start would make this throw that the lock is already held.
-  runtime = new Runtime(context(), testMachine({ stateDir: directory }), vi.fn())
+  runtime = await aliasMaster(new Runtime(context(), testMachine({ stateDir: directory }), vi.fn()))
   await runtime.ready
   expect(runtime.store.get(KV.store.schema)).toBe(SCHEMA_VERSION)
 })
@@ -1793,4 +1843,27 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   await runtime.settings.save('policy', { ...saved.policy, rules: rules.map(rule => ({ ...rule, enabled: false })) }, runtime.store.blockRevision('policy'), 'panel')
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
+})
+
+it('archives only orphan Sessions inside the managed workspace roots at reconciliation', async () => {
+  const liveThread = { key: 'feishu:oc_team:om_1', ref: { source: 'feishu', id: 'oc_team:om_1' }, createdAt: '', subscriptions: [], correlated: [], pending: [], meta: {} }
+  runtime.store.threads.save(liveThread)
+  const assessor = assessSessionId(liveThread.key)
+  const stale = join(directory, 'work', 'deleted-ticket')
+  workspaceRegistry.list = () => [
+    { id: 'workspace-master', path: directory, sessionIds: [assessor] },
+    { id: 'workspace-stale', path: stale, sessionIds: ['worker-deleted', 'orchestrator-stale'] },
+    { id: 'workspace-user', path: join(tmpdir(), 'unmanaged-session-workspace'), sessionIds: ['session-user'] },
+  ]
+  const actions = await runtime.sessions.reconcile()
+  expect(actions.map(action => action.sessionId)).toEqual(['worker-deleted', 'orchestrator-stale'])
+  expect(workspaceRegistry.archiveSession.mock.calls).toEqual([
+    ['worker-deleted', { stopActivity: true }],
+    ['orchestrator-stale', { stopActivity: true }],
+  ])
+  // A per-Ticket Workspace with no valid Session left is removed; the dedicated SA Workspace and user workspaces stay.
+  expect(workspaceRegistry.delete.mock.calls).toEqual([['workspace-stale']])
+  // A live Thread's assessment Session stays visible; a Session in a workspace outside the roots is not ours to archive.
+  expect(workspaceRegistry.archiveSession).not.toHaveBeenCalledWith(assessor, expect.anything())
+  expect(workspaceRegistry.archiveSession).not.toHaveBeenCalledWith('session-user', expect.anything())
 })

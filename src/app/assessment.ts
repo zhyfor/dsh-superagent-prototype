@@ -1,4 +1,4 @@
-/** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
+/** Proactive candidate assessment for the assessment Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
@@ -17,7 +17,7 @@ import type { Effects } from './effects.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
-/** Schema for the main Session's proactive candidate assessment decision (`orchestrator_eval_decide`). */
+/** Schema for the assessment Session's proactive candidate assessment decision (`orchestrator_eval_decide`). */
 export const AssessmentSchema = z.object({
   decision: z.enum(['accept', 'ignore', 'unavailable']),
   rule_assessments: z.array(RuleAssessmentSchema)
@@ -27,6 +27,7 @@ export const AssessmentSchema = z.object({
   title: z.string().min(1).max(160),
   worktree_name: WorktreeNameSchema.optional(),
   scope: z.string().max(1500),
+  plan: z.string().trim().min(1).max(4000).nullish().describe('For acceptance: the confirmed short plan for the worker, with 目标、范围、改动位置、实施步骤、验收、回滚.'),
   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
   reason: z.string().min(1).max(500),
@@ -58,8 +59,8 @@ export interface AssessorHost {
   paused(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
-  /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
-  deliver(requestId: string, text: string): Promise<void>
+  /** Delivers a candidate card to the Thread's assessment Session once per request ID, resolving after the Session receives it. */
+  deliver(requestId: string, text: string, thread: string): Promise<void>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
 }
 
@@ -82,9 +83,9 @@ export const EvalReadSchema = z.object({
 export type EvalRead = z.infer<typeof EvalReadSchema>
 
 /**
- * Implements the `Engine` `Assessor` port for proactive candidate evaluation in the main Session.
- * Relays each evaluation's candidate card to the main Session through the durable `assessment` effect, serves bounded `TriggerContext` and repository reads while the evaluation runs, and converts the main Session's assessment into an `AssessmentOutcome` for `Engine.decide`.
- * Depends on `SourceRegistry` (via `AssessorHost`) for source-specific thread context and on `Sessions` for deduplicated candidate delivery; the main Session's `orchestrator_eval*` tools call `context`, `read`, and `decide`.
+ * Implements the `Engine` `Assessor` port for proactive candidate evaluation in the assessment Session.
+ * Relays each evaluation's candidate card to the assessment Session through the durable `assessment` effect, serves bounded `TriggerContext` and repository reads while the evaluation runs, and converts the assessment Session's assessment into an `AssessmentOutcome` for `Engine.decide`.
+ * Depends on `SourceRegistry` (via `AssessorHost`) for source-specific thread context and on `Sessions` for deduplicated candidate delivery; the assessment Session's `orchestrator_eval*` tools call `context`, `read`, and `decide`.
  */
 export class MasterAssessor implements Assessor {
   /** Per-evaluation read caches and thread contexts, keyed by `evalId`. */
@@ -92,15 +93,15 @@ export class MasterAssessor implements Assessor {
   private readonly controller = new AbortController()
   /** Registers the handler that relays each Eval's candidate card, which a link lookup may delay for seconds. */
   constructor(private readonly host: AssessorHost) {
-    // Start the evaluation deadline only after the main Session receives the candidate card, so a busy Session does not consume evaluation time.
+    // Start the evaluation deadline only after the assessment Session receives the candidate card, so a busy Session does not consume evaluation time.
     host.effects.handle('assessment', async ({ triggerId }, evalId) => {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
-      await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }))
+      await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }), candidate.thread.key)
       this.host.engine.candidateDelivered(evalId)
     }, { limit: () => host.paused() ? 0 : 4 })
   }
-  /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
+  /** Enqueues an `assessment` effect to deliver `candidate`'s card to its Thread's assessment Session. */
   request(candidate: Candidate): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }) }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
@@ -178,7 +179,7 @@ export class MasterAssessor implements Assessor {
    * on either side of the trigger, truncated to `WINDOW_CHARS` or `NEAR_CHARS` for its two nearest neighbours with total
    * length and image IDs, plus other loaded messages as `STUB_CHARS` previews; `orchestrator_eval_read` reads any message
    * in full by ID).
-   * Assessment instructions live in the main Session's prompt (`prompts/admission.md`), not in this payload.
+   * Assessment instructions live in the assessment Session's prompt (`prompts/admission.md`), not in this payload.
    */
   async context(triggerId: string, signal?: AbortSignal) {
     const { candidate, trigger } = this.evalFor(triggerId)
@@ -214,13 +215,13 @@ export class MasterAssessor implements Assessor {
         const text = cut(item.text, WINDOW_CHARS)
         return { trigger_id: item.id, actor: item.actor.id, at: item.at, ...text, ...'chars' in text ? { read: `trigger/${item.id}` } : {} }
       }) } : {},
-      // The rules are in the main Session's Policy section, which names the version the candidate's Eval was built from.
+      // The rules are in the assessment Session's Policy section, which names the version the candidate's Eval was built from.
       ...relatedTickets(candidate.tickets), policy_version: candidate.policyVersion,
       thread }
   }
   /**
    * Serves bounded paginated text or image attachments from the evaluation's thread context or repository for
-   * `orchestrator_eval_read`; `agent` is the main Session, which receives images as attachments.
+   * `orchestrator_eval_read`; `agent` is the assessment Session, which receives images as attachments.
    */
   async read(agent: Agent, read: EvalRead, signal: AbortSignal) {
       const { candidate, trigger } = this.evalFor(read.trigger_id)

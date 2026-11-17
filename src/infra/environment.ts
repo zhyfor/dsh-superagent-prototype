@@ -115,13 +115,14 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n') + '\n')
 }
 
-/** Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback. */
-export function applyEnvironment(variables: Record<string, string | undefined>, stateDir: string, path: string): () => void {
-  const values = { ...variables, PATH: [workerBin(stateDir), path].join(delimiter) }
-  const previous = Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]))
-  const apply = (env: Record<string, string | undefined>): void => { for (const [name, value] of Object.entries(env)) { if (value === undefined) delete process.env[name]; else process.env[name] = value } }
-  apply(values)
-  return () => { apply(previous) }
+/**
+ * Returns the environment of a worker subprocess: the isolated git configuration, no ambient credentials or git identity,
+ * and the worker shim directory before the host PATH. This is passed only to subprocesses that act as workers; it never
+ * mutates `process.env`, so the DSH Host and personal Sessions keep their own environment.
+ */
+export function workerEnvironment(stateDir: string, path = process.env.PATH ?? '', overrides: Record<string, string | undefined> = {}): Record<string, string> {
+  const values: Record<string, string | undefined> = { ...agentVariables(stateDir), PATH: [workerBin(stateDir), path].join(delimiter), ...overrides }
+  return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => entry[1] !== undefined))
 }
 
 /** Spawns a command through the DSH subprocess runtime, which strips credential-shaped environment variables. */
@@ -138,7 +139,8 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
 export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
   const { github, stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
-  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
+  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir,
+    AbortSignal.any([signal, AbortSignal.timeout(60_000)]), workerEnvironment(stateDir)).catch(() => '')).split('\0')
   if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 
@@ -146,10 +148,10 @@ export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 
  * Verifies that a ticket directory's local or worktree git config defines no custom `credential.*` or `http.*extraheader`
  * keys, which the agent's git would read from the repository's own config and act on.
  */
-export async function verifyDirectory(directory: string, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+export async function verifyDirectory(directory: string, stateDir: string, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
   const keys = ['git', 'config', '-z', '--show-scope', '--get-regexp', '^(credential\\..*|http\\..*extraheader)$']
   // `git config --get-regexp` exits with code 1 when no keys match.
-  const output = await runAsWorker(subprocess, keys, directory, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+  const output = await runAsWorker(subprocess, keys, directory, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), workerEnvironment(stateDir))
     .catch((error: unknown) => { if (error instanceof CliError && error.exitCode === 1) return ''; throw error })
   const scoped = output.split('\0')
   const local = scoped.flatMap((scope, index) => index % 2 === 0 && (scope === 'local' || scope === 'worktree') ? [scoped[index + 1]!.split('\n')[0]!] : [])

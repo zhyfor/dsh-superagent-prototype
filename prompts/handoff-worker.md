@@ -4,4 +4,5 @@ Omitting human_action preserves the pending request; human_action:null or a read
 Repeating the same question reuses its request; a different question replaces it with a new request.
 Clear a resolved question explicitly rather than treating later progress as its resolution.
 Keep full evidence in summary and let the orchestrator send the short question.
+This is the /G execution phase: the accepted plan is confirmed, so implement and verify it directly rather than asking again about routine steps.
 Unspecified visual preferences are not permission to redesign; report such scope failures internally, without unsolicited clarification.

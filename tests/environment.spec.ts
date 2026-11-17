@@ -134,7 +134,7 @@ describe('ticket directory check', () => {
   const signal = new AbortController().signal
   const env = () => gitEnv({ GIT_CONFIG_GLOBAL: join(dir, 'global'), GIT_CONFIG_NOSYSTEM: '1' })
   const git = (...args: string[]) => exec('git', args, { cwd: dir, env: env() })
-  const check = (directory: string) => verifyDirectory(join(dir, directory), subprocess(join(dir, 'global')), signal)
+  const check = (directory: string) => verifyDirectory(join(dir, directory), dir, subprocess(join(dir, 'global')), signal)
   beforeEach(() => { writeFileSync(join(dir, 'global'), '[credential]\n\thelper = global-helper\n') })
   it('passes a directory whose repository adds no credentials, and one outside any repository', async () => {
     await git('init', '-q', 'repo')
@@ -151,7 +151,7 @@ describe('ticket directory check', () => {
   it('fails when git cannot read the repository\'s configuration, instead of passing it', async () => {
     await git('init', '-q', 'repo')
     writeFileSync(join(dir, 'repo', '.git', 'config'), '[core\n')
-    await expect(check('repo')).rejects.toThrow(/bad config/)
+    await expect(check('repo')).rejects.toThrow(/bad config|错误的配置行/)
   })
   it('reports a failed command\'s exit status', async () => {
     const failing = ['sh', '-c', 'echo nope >&2; exit 3']
@@ -174,7 +174,7 @@ describe('the repository the host\'s environment names', () => {
       // What the tests do: a repository of their own, checked as a ticket directory.
       await exec('git', ['init', '-q', 'repo'], { cwd: dir, env: gitEnv({ GIT_CONFIG_GLOBAL: join(dir, 'global'), GIT_CONFIG_NOSYSTEM: '1' }) })
       writeFileSync(join(dir, 'global'), '')
-      await expect(verifyDirectory(join(dir, 'repo'), subprocess(join(dir, 'global')), new AbortController().signal)).resolves.toBeUndefined()
+      await expect(verifyDirectory(join(dir, 'repo'), dir, subprocess(join(dir, 'global')), new AbortController().signal)).resolves.toBeUndefined()
       expect(readdirSync(join(dir, 'repo'))).toContain('.git')
       expect(config()).toBe(before)
       // The worker environment, which workers' shells and the host's own commands get, names no repository.

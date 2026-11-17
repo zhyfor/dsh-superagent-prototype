@@ -63,14 +63,22 @@ def ps(*options, check=False):
             yield int(parts[0]), parts[1], parts[2].split()
 
 
+def node_like(name, args):
+    """Return whether a process is a Node entry point. Node 24 renames the main thread, so `/proc/<pid>/comm` reads
+    `MainThread` instead of `node`; fall back to the argv[0] binary name, which is still `node`."""
+    if name in ('node', 'dsh'):
+        return True
+    return bool(args) and Path(args[0]).name in ('node', 'node.exe', 'dsh')
+
+
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and node_like(name, args) and serves(args, profile) for found, name, args in ps('-p', str(pid)))
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, name, args in ps('-ax', check=True) if node_like(name, args) and serves(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):

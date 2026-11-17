@@ -166,7 +166,6 @@ it('reports an action that fails after a commit, runs the others, and keeps what
   const store = new Store(join(directory, 'orchestrator.sqlite'), error => { reported.push(error) })
   const ran: string[] = []
   const value = store.atomic(() => {
-    store.set(KV.runtime.masterId, 'm')
     store.afterCommit(() => { throw new Error('cancel failed') })
     store.afterCommit(() => { ran.push('next') })
     return 'done'
@@ -174,7 +173,6 @@ it('reports an action that fails after a commit, runs the others, and keeps what
   expect(value).toBe('done')
   expect(ran).toEqual(['next'])
   expect(reported).toEqual([new Error('cancel failed')])
-  expect(store.get(KV.runtime.masterId)).toBe('m')
   store.close()
 })
 

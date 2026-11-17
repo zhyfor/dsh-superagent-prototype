@@ -35,11 +35,11 @@ The generated sections are editable templates. They must retain these placeholde
 
 Editing a part changes the instructions the model receives. It does not change the gate, Mandates, tool checks or account wrappers, which remain enforced by code.
 
-On an explicit human request, the main Session can also save overrides with `orchestrator_prompts_save`. If a save omits an override's `base`, it keeps the saved base. A removed part already present in the saved configuration is dropped on save; any other unknown part is refused.
+On an explicit human request, the assessment Session can also save overrides with `orchestrator_prompts_save`. If a save omits an override's `base`, it keeps the saved base. A removed part already present in the saved configuration is dropped on save; any other unknown part is refused.
 
 An override records which built-in text it was based on. Upgrades preserve the team's text. If the default changes, the panel marks the part **Default updated** and shows the difference beside the team's text. The team can keep its text, use the new default or edit it. Parts without overrides automatically follow new defaults.
 
-The main Session can read affected part names in `orchestrator_read prompts`, under `default_changed`.
+The assessment Session can read affected part names in `orchestrator_read prompts`, under `default_changed`.
 
 ## Assembly and precedence
 
@@ -48,17 +48,23 @@ The system prompt is assembled in this order:
 1. Shared instructions and the role.
 2. The three team sections.
 3. Subscriptions and replies.
-4. Dispatch for the main Session, or work instructions for an Executor.
-5. `runtime/admission`, for the main Session only.
+4. Dispatch for the assessment Session, or work instructions for an Executor.
+5. `runtime/admission`, for the assessment Session only.
 6. Handoff instructions.
 7. `runtime/environment`.
-8. `runtime/policy`, for the main Session only.
+8. `runtime/policy`, for the assessment Session only.
 
 Admission instructions come from `prompts/admission.md`. They describe proactive assessment and when an irrelevant candidate can be ignored from its card. `orchestrator_eval` returns context rather than repeating these instructions.
 
-The environment section gives the main Session deployment-wide values and each Executor its Ticket-specific values. The Policy section is regenerated from settings on every model request. It contains the Policy version, accept mode, the explicit-request exemption, and enabled rules as `- <name> (<id>): <instruction>`, or a statement that none is enabled. It is last so a Policy change leaves the preceding prompt text unchanged.
+### `/D` assessment and `/G` execution
 
-Executors also read DeepSeek Harness's coding prompt and the repository's `AGENTS.md`; the main Session does not. An inferred Ticket adds a final note limiting its Executor to the matched rules. Assignments and incoming messages arrive inline as Trigger cards, with resource pointers only for truncated content.
+`/D` is read-only requirement assessment. The Thread's assessment Session establishes the goal, scope, constraints, risks and acceptance criteria from the Thread and repository context, decides what the evidence supports, and does not hand routine design choices back to the user. It modifies no files. An accept returns a short plan with goal, scope, files or areas to change, implementation steps, acceptance checks and rollback; ignore and stop carry no plan.
+
+`/G` is execution. The accepted plan is confirmed input, not a draft to re-open. The worker reads the workspace `AGENTS.md` first, implements, verifies, commits, pushes and reports. It does not re-discuss the plan or re-verify every path it names unless evidence shows the plan is wrong or unsafe. The assignment carries the assessed plan, with the Ticket's stored plan as the fallback for older Tickets.
+
+The environment section gives the assessment Session deployment-wide values and each Executor its Ticket-specific values. The Policy section is regenerated from settings on every model request. It contains the Policy version, accept mode, the explicit-request exemption, and enabled rules as `- <name> (<id>): <instruction>`, or a statement that none is enabled. It is last so a Policy change leaves the preceding prompt text unchanged.
+
+Executors also read DeepSeek Harness's coding prompt and the repository's `AGENTS.md`; the assessment Session does not. An inferred Ticket adds a final note limiting its Executor to the matched rules. Assignments and incoming messages arrive inline as Trigger cards, with resource pointers only for truncated content.
 
 Executors work unattended. Their tools exclude those that ask a person, present UI to them or change the profile, such as `ask_user_question`, `present` and `plugin_manager`.
 
@@ -74,14 +80,14 @@ From strongest to weakest:
 
 These apply [000 Philosophy](000-philosophy.md) to the agents:
 
-- **Separate roles.** The main Session only routes: it forwards the original Trigger and the routing facts, and makes no technical decisions, through one routing tool that takes the decisions on several waiting candidates in one call. A routing note has at most 30 words. The Executor reads the original sources, judges the scope, implements and verifies.
-- **The main Session does not wait.** Reports, follow-up notices, candidates and completed background jobs arrive automatically as messages. It ends the turn when nothing remains to do. A guard refuses `sleep`, shell timeouts over 30 seconds and job waits over 5 seconds, because a blocked step delays new candidates. These instructions replace DeepSeek Harness's own job-notification note in the main Session's complete prompt.
+- **Separate roles.** The assessment Session judges requirements and routes: it reads the Thread's evidence, decides whether work is requested, and on accept records a short plan. It makes no implementation change and does not solve the worker's technical problem. One routing tool takes decisions on several waiting candidates in one call; a routing note has at most 30 words. The Executor reads the original sources, executes the confirmed plan, implements and verifies.
+- **The assessment Session does not wait.** Reports, follow-up notices, candidates and completed background jobs arrive automatically as messages. It ends the turn when nothing remains to do. A guard refuses `sleep`, shell timeouts over 30 seconds and job waits over 5 seconds, because a blocked step delays new candidates. These instructions replace DeepSeek Harness's own job-notification note in the assessment Session's complete prompt.
 - **Message only when a person must act or can use a result:** a result can be reviewed or used, a decision or resource is needed, or the work cannot be finished. Chat messages are one sentence by default, with a hard limit of 100 words.
-- **Executors decide their follow-ups.** Each Executor handles and acknowledges in-scope requests, and hands back requests beyond its Ticket or for another Ticket. A message becomes new work only after all its owners hand it back or end without taking it up. The main Session receives follow-up notices but may act on them only to stop work. Handed-back messages then arrive as candidates with the Executors' reasons.
-- **Coordinate through subscriptions and the main Session.** An Executor follows related Threads for context. The main Session can send a fact from another Ticket in a note of at most 100 words. Neither the Subscription nor the note grants authority.
+- **Executors decide their follow-ups.** Each Executor handles and acknowledges in-scope requests, and hands back requests beyond its Ticket or for another Ticket. A message becomes new work only after all its owners hand it back or end without taking it up. The assessment Session receives follow-up notices but may act on them only to stop work. Handed-back messages then arrive as candidates with the Executors' reasons.
+- **Coordinate through subscriptions and the assessment Session.** An Executor follows related Threads for context. The assessment Session for the ticket's Thread can send a fact from another Ticket in a note of at most 100 words. Neither the Subscription nor the note grants authority.
 - **Attach only on an explicit reference.** A message must point to a Ticket's pull request, Issue, source message or acknowledgement, or to a recent change with exactly one matching Ticket. Topic similarity alone is not enough. Attachment subscribes the Ticket to the entire Thread; an Executor finding it unrelated uses `orchestrator_thread_unrelated` and does not answer there.
 - **Confirm concretely, once.** Before substantial work, the Executor confirms each new request and names the object and the expected result, as a reply under the original message.
-- **Ask through `human_action`.** The Executor puts one concrete question in its Report, and the main Session forwards it unchanged. If a person's message prompted the question, it names that message and the host asks there. Otherwise it asks in the Ticket's original conversation. Already authorized work can continue meanwhile.
+- **Ask through `human_action`.** The Executor puts one concrete question in its Report, and the assessment Session forwards it unchanged. If a person's message prompted the question, it names that message and the host asks there. Otherwise it asks in the Ticket's original conversation. Already authorized work can continue meanwhile.
 - **Honest delivery.** Opening a pull request is not readiness; a draft is marked unfinished; a UI change without a real before screenshot is not ready.
 - **A person's pause holds** across follow-ups, new Executor Sessions and restarts until a person lifts it. Automatic feedback never resumes paused work.
 - **Examples only show format.** An example sentence is not a fact the agent may claim.

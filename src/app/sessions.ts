@@ -4,10 +4,11 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { assessSessionId, isAssessSession, managedSessionIds, withinAnyRoot } from './session-policy.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -24,18 +25,21 @@ import type { RegisterTool, Tool } from './tools/tool.ts'
 export interface SessionsHost {
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
-  readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
+  readonly store: Pick<Store, 'tickets' | 'threads' | 'settings' | 'get' | 'set' | 'keys'>
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'compose' | 'skills'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'idle' | 'pending'>
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
   readonly health: HealthEntry
-  readonly masterId: string
+  /** The one Workspace dsh-superagent owns, titled `SA`; all of its Sessions are created in it. */
+  readonly workspacePath: string
   readonly lifetime: AbortSignal
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
-  /** Tools to register on the main Session (`ticket === undefined`) or on `ticket`'s worker Session. */
+  /** Tools to register on the assessment Session (`ticket === undefined`) or on `ticket`'s worker Session. */
   tools(agent: Agent, ticket?: Ticket): Tool[]
+  /** Roots whose workspaces and Sessions dsh-superagent owns; only Sessions outside the valid set are archived. */
+  reconcileRoots(): readonly string[]
 }
 
 /**
@@ -44,8 +48,15 @@ export interface SessionsHost {
  */
 interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
 
-/** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
+/** The agent presets Executor Sessions and the assessment Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+/** The title of dsh-superagent's single Workspace, which every Session it creates belongs to. */
+export const WORKSPACE_TITLE = 'SA'
+/** DSH's working-directory service, resolved by name because it is a Host plugin rather than this bundle's peer. */
+interface WorkingDirectory {
+  get(session: Agent['session']): string
+  set(agent: Agent, path: string, signal?: AbortSignal): Promise<string>
+}
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** DSH's agent preset registry selected `agentPreset` for a Session. */
@@ -53,24 +64,23 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 /**
- * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list and
- * subagents. It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
- * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
- * messages other Sessions, or edits documents.
+ * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills and its todo list.
+ * It gets no tool that starts or messages other Sessions: one Ticket has exactly one Executor Session, while the main
+ * Session routes all work.
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
-  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
-/** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
+  'web_fetch', 'skill', 'todo_write']
+/** What the assessment Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
-/** What a main Session under `standard` is told when its command would wait the shell's default. */
+/** What an assessment Session under `standard` is told when its command would wait the shell's default. */
 const DEFAULT_WAIT = 'This shell waits up to 60 seconds by default: pass timeoutMs of at most 30000, or run_in_background, '
   + 'as a waiting step holds back new candidates.'
 /** `sleep` at a command position: the start, after ; & | ( { ! ` or a newline, or after a keyword or a command that runs it. */
 const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|nohup|command|env)\s)\s*(?:\S*\/)?sleep\b/
 /**
- * The main Session's guard: it refuses a bash command that runs sleep or asks to hold the step longer than 30 seconds, and a
- * job wait longer than 5 seconds. Under `standard`, as a main Session created before the router preset runs, the shell holds
+ * The assessment Session's guard: it refuses a bash command that runs sleep or asks to hold the step longer than 30 seconds, and a
+ * job wait longer than 5 seconds. Under `standard`, as an assessment Session created before the router preset runs, the shell holds
  * a command 60 seconds and a job wait lasts 30 seconds by default, so a command needs a timeout or the background, and a
  * job wait its timeout; the router preset ends both after 5 seconds.
  */
@@ -96,13 +106,20 @@ export class Sessions {
   private readonly bindings = new Map<Agent, SessionBinding>()
   private readonly retryHealth = new RetryHealth()
   private readonly ctx: Context
-  /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session. */
+  /** The dedicated Workspace, created once and reused for every Session; its promise also serializes creation. */
+  private workspaceRecord?: ReturnType<Context['workspaceRegistry']['create']>
+  /** Registers ordered `relay` and `notice` effect handlers that deliver to a Thread's assessment Session. */
   constructor(private readonly host: SessionsHost) {
     this.ctx = host.context
     this.agentDelivery = new AgentDelivery(host.context)
-    // Deliver relays and notices to the main Session in the order they were queued.
-    host.effects.handle('relay', ({ text }, requestId) => this.prompt(host.masterId, requestId, text, 'steer'), { ordered: true })
-    host.effects.handle('notice', ({ value, summary }, name) => this.inject(name, value, summary), { ordered: true })
+    // Deliver relays and notices in the order they were queued; a relay wakes its Thread's assessment Session, a notice only injects into one that exists.
+    host.effects.handle('relay', async ({ text, targetThread }, requestId) => {
+      if (!targetThread) return
+      const id = assessSessionId(targetThread)
+      await this.assess(targetThread)
+      await this.prompt(id, requestId, text, 'steer')
+    }, { ordered: true })
+    host.effects.handle('notice', ({ value, summary, targetThread }, name) => this.inject(name, value, summary, targetThread), { ordered: true })
   }
   /** Subscribes to host agent and session events so newly created sessions are decorated and model-budget retries are reflected in health. Call once at startup. */
   install(): void {
@@ -124,7 +141,7 @@ export class Sessions {
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
         const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
+        const ours = isAssessSession(sessionId) ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
         presets.select(agent, ours).catch(() => {})
@@ -134,24 +151,124 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
+  /**
+   * Creates or reuses dsh-superagent's one Workspace, `SA`, and keeps its title. Workspace creation is idempotent by
+   * canonical path; an existing record keeps its old title, so it is retitled deliberately. The registry requires every
+   * Session's immutable header cwd to equal its Workspace path, which is why all Sessions are created against this one
+   * Workspace while a worker's effective directory is set separately (see `assignDirectory`).
+   */
+  async workspace(): Promise<Awaited<ReturnType<Context['workspaceRegistry']['create']>>> {
+    this.workspaceRecord ??= (async () => {
+      const workspace = await this.ctx.workspaceRegistry.create(this.host.workspacePath, WORKSPACE_TITLE)
+      if (workspace.title !== WORKSPACE_TITLE) await workspace.setTitle(WORKSPACE_TITLE)
+      return workspace
+    })()
+    return this.workspaceRecord
+  }
+  /**
+   * Resolves or creates session `id` inside the `SA` Workspace, initializes its role model, decorates it with
+   * prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. A worker's tools operate in
+   * `cwd` (its Ticket directory) even though its Session belongs to the shared Workspace.
+   */
+  async ensure(id: string, cwd: string, title: string, role: 'assessor' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
-      const workspace = await ctx.workspaceRegistry.create(cwd)
+      const workspace = await this.workspace()
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
       await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
         agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    await this.attach(result.agent, role)
     const settings = this.host.store.settings()
-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    await initializeRoleModel(ctx, result.agent, role === 'assessor' ? settings.eval.model : settings.executor.model)
+    await this.assignDirectory(result.agent, cwd, role)
     await this.decorate(result.agent)
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
+  }
+  /** Resolves or creates the assessment Session for `thread`, titled for the Thread and reused across its messages. */
+  async assess(thread: string): Promise<Agent> {
+    return this.ensure(assessSessionId(thread), this.host.workspacePath, `需求评估 ${thread}`, 'assessor')
+  }
+  /**
+   * Attaches an existing Session the registry no longer accounts for to the `SA` Workspace, which repairs the
+   * assessment Session created before this single-Workspace layout. A Session already in another Workspace is left alone:
+   * membership requires its immutable header cwd to equal that Workspace's path.
+   */
+  private async attach(agent: Agent, role: 'assessor' | 'worker'): Promise<void> {
+    const registry = this.ctx.workspaceRegistry
+    if (typeof registry.list !== 'function') return
+    if (registry.list().some(workspace => workspace.sessionIds.includes(agent.id as SessionId))) return
+    // Only an assessment Session can usually be repaired: a worker's header cwd is its Ticket directory, not the SA path.
+    if (role === 'worker') return
+    try {
+      const workspace = await this.workspace()
+      await workspace.attachSession(agent.id as SessionId)
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not attach Session %s to Workspace %s: %s', agent.id,
+        this.host.workspacePath, String(error))
+    }
+  }
+  /** Makes a worker's tools run in its Ticket directory while its Session stays in the shared Workspace. */
+  private async assignDirectory(agent: Agent, cwd: string, role: 'assessor' | 'worker'): Promise<void> {
+    if (role !== 'worker' || !cwd) return
+    const get = (this.ctx as unknown as { get(name: string): unknown }).get.bind(this.ctx)
+    const workingDirectory = get('workingDirectory') as WorkingDirectory | undefined
+    if (!workingDirectory) throw new Error("dsh-superagent needs DSH's workingDirectory service to run a worker in its Ticket directory")
+    if (workingDirectory.get(agent.session) !== cwd) await workingDirectory.set(agent, cwd, this.host.lifetime)
+  }
+  /**
+   * Archives Sessions in dsh-superagent's own workspace roots that are not in the valid set (one assessment Session per
+   * Thread plus one worker per still-live Ticket), then removes legacy per-Ticket Workspace records that no longer hold a valid Session.
+   * Session logs and directories are kept. Called at startup so a legacy subagent, a deleted Ticket, or an ad-hoc
+   * per-Ticket Workspace disappears from the DSH UI without data loss.
+   */
+  async reconcile(): Promise<{ sessionId: string; workspaceId: string; path: string }[]> {
+    const registry = this.ctx.workspaceRegistry
+    if (typeof registry.list !== 'function' || typeof registry.archiveSession !== 'function') return []
+    const valid = new Set(managedSessionIds(this.host.store.threads.list(), this.host.store.tickets.list().filter(liveTicket)))
+    const archived = new Set(registry.archivedSessionIds)
+    const roots = this.host.reconcileRoots()
+    const actions: { sessionId: string; workspaceId: string; path: string }[] = []
+    const removed: string[] = []
+    for (const workspace of registry.list()) {
+      if (!withinAnyRoot(roots, workspace.path)) continue
+      let failed = false
+      for (const sessionId of workspace.sessionIds) {
+        if (valid.has(sessionId) || archived.has(sessionId)) continue
+        try {
+          await registry.archiveSession(sessionId, { stopActivity: true })
+          archived.add(sessionId)
+          actions.push({ sessionId, workspaceId: String(workspace.id), path: workspace.path })
+        } catch (error) {
+          failed = true
+          this.ctx.logger.warn('dsh-superagent could not archive orphan Session %s in %s: %s', sessionId, workspace.path,
+            String(error))
+        }
+      }
+      // Older versions created one Workspace per Ticket directory. Once none of its Sessions is valid, removing the
+      // registration is enough: its directory and Session logs stay, and the dedicated SA Workspace is never removed.
+      const dedicated = resolve(workspace.path) === resolve(this.host.workspacePath)
+      if (!dedicated && !failed && typeof registry.delete === 'function'
+        && !workspace.sessionIds.some(sessionId => valid.has(sessionId))) {
+        try {
+          await registry.delete(workspace.id)
+          removed.push(workspace.path)
+        } catch (error) {
+          this.ctx.logger.warn('dsh-superagent could not remove legacy Workspace %s: %s', workspace.path, String(error))
+        }
+      }
+    }
+    if (actions.length) this.ctx.logger.info('dsh-superagent archived %d orphan Session(s): %s', actions.length,
+      actions.map(action => action.sessionId).join(', '))
+    else this.ctx.logger.info('dsh-superagent Session policy valid: %d managed Session(s)', valid.size)
+    if (removed.length) this.ctx.logger.info('dsh-superagent removed %d legacy Workspace(s): %s', removed.length,
+      removed.join(', '))
+    return actions
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {
@@ -167,24 +284,27 @@ export class Sessions {
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
   promptedId(requestId: string): MessageId { return messageId(key(requestId)) }
-  /** Enqueues a steering relay to the main Session; relays are durable and retried by `Effects` until delivered, at most once per `requestId`. */
-  relay(requestId: string, text: string): void { this.host.effects.enqueue('relay', requestId, { text }) }
-  /** Enqueues a durable background notice for injection into the main Session; a new notice with the same `name` replaces a still-waiting notice of that `name`. */
-  notify(name: string, value: Record<string, unknown>, summary: string): void { this.host.effects.enqueue('notice', name, { value, summary }) }
-  /** Waits for currently runnable `notice` effects to settle and returns `'injected'` if notice `name` has reached the main Session or `'pending'` if it is still queued. */
+  /** Enqueues a steering relay to a Thread's assessment Session; relays are durable and retried by `Effects` until delivered, at most once per `requestId`. */
+  relay(requestId: string, text: string, targetThread?: string): void { this.host.effects.enqueue('relay', requestId, { text, ...(targetThread ? { targetThread } : {}) }) }
+  /** Enqueues a durable background notice for injection into a Thread's assessment Session; a new notice with the same `name` replaces a still-waiting notice of that `name`. */
+  notify(name: string, value: Record<string, unknown>, summary: string, targetThread?: string): void {
+    this.host.effects.enqueue('notice', name, { value, summary, ...(targetThread ? { targetThread } : {}) })
+  }
+  /** Waits for currently runnable `notice` effects to settle and returns `'injected'` if notice `name` has reached its assessment Session or `'pending'` if it is still queued. */
   async delivery(name: string): Promise<'injected' | 'pending'> {
     await this.host.effects.idle('notice')
     return this.host.effects.pending('notice', name) ? 'pending' : 'injected'
   }
-  /** Injects a notice into the main Session without waking it; no-op if the main Session does not exist yet. */
-  private async inject(name: string, value: Record<string, unknown>, summary: string): Promise<void> {
-    const resolved = await this.ctx.sessionController.resolveAgent(this.host.masterId as SessionId)
+  /** Injects a notice into a Thread's assessment Session without waking it; no-op when no target or Session exists yet. */
+  private async inject(name: string, value: Record<string, unknown>, summary: string, targetThread?: string): Promise<void> {
+    if (!targetThread) return
+    const resolved = await this.ctx.sessionController.resolveAgent(assessSessionId(targetThread) as SessionId)
     if ('error' in resolved) return
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
     const text = JSON.stringify(value)
     await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime)
   }
-  /** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
+  /** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether a `'prompts'` notice is still pending. */
   status() {
     const { store, prompts, effects } = this.host
     const sessions = store.keys(KV.sessions.prompts).flatMap(name => {
@@ -232,9 +352,9 @@ export class Sessions {
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
-    const master = agent.id === host.masterId
-    const ticket = master ? undefined : this.ticketOf(agent)
-    if (!master && !ticket) { this.limitSubagent(agent); return }
+    const assessor = isAssessSession(agent.id)
+    const ticket = assessor ? undefined : this.ticketOf(agent)
+    if (!assessor && !ticket) { this.limitSubagent(agent); return }
     const binding: SessionBinding = { disposers: [] }
     this.bindings.set(agent, binding)
     this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
@@ -244,9 +364,9 @@ export class Sessions {
     binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
-      const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
+      const composed = host.prompts.compose(version.config, assessor ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
       return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
-    }, ...(master ? { complete: true } : {}) }))
+    }, ...(assessor ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
       binding.scope = scope
@@ -259,7 +379,7 @@ export class Sessions {
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
-    if (master) {
+    if (assessor) {
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {

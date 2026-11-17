@@ -60,6 +60,9 @@
               - id: tool-pwsh
                 name: '@deepseek-ai/dsh-tool-pwsh'
                 disabled: !!js process.platform !== 'win32'
+              # Worker-only shell environment: adds the isolated git config and CLI shims to every command in this preset.
+              - id: worker-shell-env
+                name: dsh-superagent/worker-shell-env
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
@@ -85,6 +88,10 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  thresholdRatio: 0.08
+                  retainRatio: 0.02
+                  headroomTokens: 65536
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
@@ -160,6 +167,9 @@
               - id: tool-pwsh
                 name: '@deepseek-ai/dsh-tool-pwsh'
                 disabled: !!js process.platform !== 'win32'
+              # Worker-only shell environment: adds the isolated git config and CLI shims to every command in this preset.
+              - id: worker-shell-env
+                name: dsh-superagent/worker-shell-env
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -183,6 +193,10 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  thresholdRatio: 0.08
+                  retainRatio: 0.02
+                  headroomTokens: 65536
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner

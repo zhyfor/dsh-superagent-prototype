@@ -94,7 +94,7 @@ it('saves with the prompt save tool an override without its base, refuses a part
 it('keeps the main Session\'s resources from an Executor Session, which lists only its own', async () => {
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   for (const resource of ['tickets', 'triggers', 'threads', 'decisions', 'settings', 'prompts', 'models']) {
-    await expect(h.runTool(sessionId, 'orchestrator_read', { resource })).rejects.toThrow('belongs to the main Session')
+    await expect(h.runTool(sessionId, 'orchestrator_read', { resource })).rejects.toThrow('belongs to an assessment Session')
   }
   expect(await h.runTool(sessionId, 'orchestrator_read', { resource: `ticket/${ticket.id}` })).toMatchObject({ ticket_id: ticket.id })
   type Registered = { description: string; parameters: { properties: { resource: { description: string } } } }
@@ -417,12 +417,13 @@ it('relays a worker\'s report with its ticket card and the start of its summary,
   expect(notices().at(-1)).toMatchObject({ ticket_ended: { ticket_id: ticket.id, state: 'completed' } })
 })
 
-it('tells the main Session of the settings, prompts, requeues and unsubscriptions others made, never of its own', async () => {
+it('does not broadcast settings and prompt saves, nor the assessment Session\'s own requeues and unsubscriptions, into any Thread', async () => {
   const save = (args: Record<string, unknown>) => h.runTool(h.runtime.masterId, 'orchestrator_settings_save', args)
   const evaluation = h.runtime.store.settings().eval
   await h.runtime.settings.save('eval', { ...evaluation, mode: 'observe' }, h.runtime.store.blockRevision('eval'), 'panel')
   await h.runtime.idle()
-  expect(notices().at(-1)).toEqual({ settings_saved: 'eval', changed: ['eval.mode'], read: 'settings/eval' })
+  // A global settings save names no Thread: no assessment Session is woken or injected.
+  expect(notices().some(notice => 'settings_saved' in notice)).toBe(false)
   const before = notices().length
   expect(await save({ block: 'eval', value: { ...evaluation, mode: 'auto' }, revision: h.runtime.store.blockRevision('eval') })).not.toHaveProperty('context_delivery')
   const config = { ...h.runtime.prompts.current().config, scope: 'Finish what was asked.' }

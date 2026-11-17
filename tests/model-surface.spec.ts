@@ -13,6 +13,9 @@ import { promptParts } from '../src/app/prompts.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { TICKET_STATES } from '../src/app/cards.ts'
 import { Runtime } from '../src/app/runtime.ts'
+import { assessSessionId } from '../src/app/session-policy.ts'
+
+declare module '../src/app/runtime.ts' { interface Runtime { /** Test-only alias; production has no global Session. */ readonly masterId: string } }
 import { workerSessionId } from '../src/executor/dsh.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands } from '../src/infra/commands.ts'
@@ -131,10 +134,11 @@ async function start() {
   const ctx = new Context()
   const history = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
   const services = { agents, llm: { resolveCallConfig: async (value: unknown) => value },
-    workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) },
+    workspaceRegistry: { create: async (cwd: string, title?: string) => ({ id: cwd, title, setTitle: async () => {}, attachSession: async () => {} }), list: () => [], archivedSessionIds: [], archiveSession: async () => {}, delete: async () => {} },
+    workingDirectory: { get: () => '', set: async (_agent: unknown, path: string) => path },
     sessionController: { create, resolveAgent, selectModel: async () => {}, rename: async () => {}, inspect: async () => ({ events: [] }) },
     sessionPersistence: { flush: async () => {}, open: async () => history }, permissionPresets: { set: () => {} }, subprocess,
-    webServer: { host: '127.0.0.1', port: 3082, register: () => () => {} } }
+    webServer: { host: '127.0.0.1', port: 3082, register: () => () => {} }, connection: { requestRejection: () => undefined } }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   const seed = new Store(join(directory, 'orchestrator.sqlite'))
   const github = { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }
@@ -142,6 +146,9 @@ async function start() {
   seed.close()
   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), () => {})
   await runtime.ready
+  await runtime.sessions.assess('test:main')
+  const seededMaster = assessSessionId('test:main')
+  Object.defineProperty(runtime, 'masterId', { get: () => [...agents.keys()].filter(id => id.startsWith('assess-')).at(-1) ?? seededMaster })
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
   const allowed = { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } }
@@ -239,9 +246,11 @@ function walk(node: unknown, visit: (node: Record<string, unknown>, property?: s
 function collect(host: Host, { a, b, workerA, workerB, refusal }: Awaited<ReturnType<typeof drive>>): Surface[] {
   const { runtime } = host
   const surfaces: Surface[] = []
+  // The request's Thread has its own assessment Session; that is where its candidate, notices and tools live.
+  const assessor = assessSessionId('feishu:oc_team:om_1')
   const config = runtime.prompts.current().config
   const shared = new Set(['runtime/shared', 'communication', 'scope', 'delivery', 'runtime/subscriptions', 'runtime/replies'])
-  for (const [role, sessionId] of [['orchestrator', runtime.masterId], ['worker', workerA], ['worker', workerB]] as const) {
+  for (const [role, sessionId] of [['orchestrator', assessor], ['worker', workerA], ['worker', workerB]] as const) {
     const parts = promptParts(config, role)
     for (const { name, text } of parts) {
       surfaces.push({ where: `${role} prompt ${name}`, owner: PROMPTS, role: shared.has(name) ? 'both' : role, text })
@@ -250,18 +259,18 @@ function collect(host: Host, { a, b, workerA, workerB, refusal }: Awaited<Return
     const generated = parts.reduce((text, part) => text.replace(part.text, ''), host.sections.get(sessionId)!({}))
     surfaces.push({ where: `${role} prompt from the runtime`, owner: SESSIONS, role, text: generated })
   }
-  for (const [role, sessionId] of [['orchestrator', runtime.masterId], ['worker', workerA]] as const) {
+  for (const [role, sessionId] of [['orchestrator', assessor], ['worker', workerA]] as const) {
     for (const tool of host.tools.get(sessionId)!.values()) {
       const descriptions = [tool.description]
       walk(tool.parameters, node => { if (typeof node.description === 'string') descriptions.push(node.description) })
       surfaces.push({ where: `${role} tool ${tool.name}`, owner: TOOLS, role, text: descriptions.join('\n') })
     }
   }
-  for (const { name, description, content } of host.skills.get(runtime.masterId)!) {
+  for (const { name, description, content } of host.skills.get(assessor)!) {
     surfaces.push({ where: `skill ${name}`, owner: PROMPTS, role: 'both', text: `${description}\n${content}` })
   }
   surfaces.push({ where: 'orchestrator tool orchestrator_reply error', owner: ERRORS, role: 'orchestrator', text: refusal })
-  for (const { text } of host.inputs.filter(input => input.sessionId === runtime.masterId)) {
+  for (const { text } of host.inputs.filter(input => input.sessionId === assessor)) {
     const value = JSON.parse(text) as Record<string, unknown>
     const kind = String(value.kind ?? Object.keys(value)[0])
     const owner = kind === 'candidate' ? LINKS : kind === 'worker_attention' ? TOOLS : kind === 'worker_report' ? EXECUTOR : NOTICES
@@ -295,7 +304,7 @@ beforeAll(async () => {
   surfaces = collect(host, sessions)
 })
 afterAll(async () => { await host?.stop() })
-const toolsOf = (role: Role) => host.tools.get(role === 'orchestrator' ? host.runtime.masterId : sessions.workerA)!
+const toolsOf = (role: Role) => host.tools.get(role === 'orchestrator' ? assessSessionId('feishu:oc_team:om_1') : sessions.workerA)!
 
 /** Check collected surfaces for unregistered tools, invalid enum options, legacy terms, banned phrases, and cross-role tool references. */
 function failures(): Map<string, string> {
@@ -359,7 +368,7 @@ it('collects both roles\' tools, prompts, skills and inputs', () => {
   const wheres = new Set(surfaces.map(surface => surface.where))
   for (const where of ['orchestrator prompt runtime/dispatch', 'worker prompt runtime/work', 'skill dsh-superagent-github', 'skill dsh-superagent-feishu',
     'orchestrator prompt runtime/admission', 'orchestrator input candidate', 'orchestrator input worker_attention', 'orchestrator input worker_report',
-    'orchestrator input thread_unrelated', 'orchestrator input ticket_ended', 'orchestrator input settings_saved', 'worker input assignment (explicit)',
+    'orchestrator input thread_unrelated', 'orchestrator input ticket_ended', 'worker input assignment (explicit)',
     'worker input assignment (inferred)', 'worker input policy-changed', 'worker input resumed', 'worker input status',
     'worker input recovery', 'worker input note', 'worker input trigger (context)', 'orchestrator input follow_up',
     'orchestrator input thread_followed', 'orchestrator tool orchestrator_reply error']) expect(wheres).toContain(where)

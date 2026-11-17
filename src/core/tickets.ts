@@ -10,7 +10,7 @@ import type { Replies } from './replies.ts'
 import { canRetry } from './stage.ts'
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
-/** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
+/** Whether an Input is a message no person wrote, such as CI's, a bot's, or the assessment Session's note. */
 export const automatic = (input: TicketInput | undefined): boolean => input?.kind === 'note' || (input?.kind === 'trigger' && !input.human)
 /**
  * Whether a ticket's worker read a Trigger Input before `until`, its latest report or turn end: its Session took the message
@@ -40,7 +40,7 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+    let ticket: Ticket = { id, title: outcome.title, ...(outcome.plan ? { plan: outcome.plan } : {}), decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
@@ -149,7 +149,7 @@ export class Tickets extends EnginePart {
    */
   requestStatus(ticketId: string): boolean {
     const ticket = this.require(ticketId)
-    if (!liveTicket(ticket) || runningAssignment(ticket)?.report?.state !== 'waiting') return false
+    if (!liveTicket(ticket) || latestAssignment(ticket)?.report?.state !== 'waiting') return false
     this.addInput(ticket, { id: `status:${ticketId}:${ticket.updatedAt}`, kind: 'text', text: STATUS_REQUEST, at: this.now() })
     return true
   }
@@ -169,14 +169,42 @@ export class Tickets extends EnginePart {
     const ticket = this.require(ticketId)
     const latest = latestAssignment(ticket)
     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
-    this.endAssignment(ticket, latest, 'retried')
+    const wasActive = latest.state !== 'ended'
+    if (wasActive) this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
     const assignment = this.newAssignment(ticket)
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
-    this.options.executor.stop(ticket, latest, 'retried')
+    if (wasActive) this.options.executor.stop(ticket, latest, 'retried')
     this.options.executor.start(ticket, assignment)
     return ticket
+  }
+  /**
+   * Start the next phase of an open Ticket whose latest Assignment ended while Inputs still wait; used after a restart.
+   */
+  resumePhase(ticketId: string): void {
+    const ticket = this.require(ticketId)
+    if (!liveTicket(ticket) || waitsForPerson(ticket) || !ticket.undelivered.length || latestAssignment(ticket)?.state !== 'ended') return
+    const assignment = this.newAssignment(ticket)
+    ticket.updatedAt = this.now()
+    this.repo.tickets.save(ticket)
+    this.options.executor.start(ticket, assignment)
+  }
+  /**
+   * End an Assignment that finished its phase while keeping the Ticket open. A later Input starts a new Assignment,
+   * so a worker that handed off to a person no longer leaves a running Assignment hanging in the panel.
+   */
+  finishAssignment(ticketId: string, assignmentId: string, reason: string): void {
+    const ticket = this.require(ticketId)
+    if (!liveTicket(ticket)) return
+    const assignment = ticket.assignments.find(item => item.id === assignmentId)
+    if (!assignment || assignment.state === 'ended') return
+    this.endAssignment(ticket, assignment, reason)
+    ticket.updatedAt = this.now()
+    // Inputs that arrived while this phase was handing off are the next phase's first work.
+    const next = ticket.undelivered.length > 0 && !waitsForPerson(ticket) ? this.newAssignment(ticket) : undefined
+    this.repo.tickets.save(ticket)
+    if (next) this.options.executor.start(ticket, next)
   }
   /**
    * Drops a ticket's Subscription to a Thread its worker found unrelated, and hands back, with `reason`, the person's messages there that the ticket decides.
@@ -242,6 +270,13 @@ export class Tickets extends EnginePart {
     const running = runningAssignment(ticket), latest = latestAssignment(ticket)
     if (running) this.options.executor.deliver(ticket, running)
     else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.options.executor.start(ticket, latest)
+    else if (latest?.state === 'ended' && !waitsForPerson(ticket)) {
+      // The previous phase ended its Assignment; this Input begins a new phase in the same worker Session.
+      const assignment = this.newAssignment(ticket)
+      ticket.updatedAt = this.now()
+      this.repo.tickets.save(ticket)
+      this.options.executor.start(ticket, assignment)
+    }
   }
   /**
    * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
@@ -301,7 +336,7 @@ export class Tickets extends EnginePart {
     for (const trigger of left) {
       const disposition = this.repo.triggers.disposition(trigger.id)
       const decision = disposition?.decisionId ? this.repo.decisions.get(disposition.decisionId) : undefined
-      // The main Session that stopped this ticket on the message decides the rest of it itself, unless a ticket handed it back.
+      // The assessment Session that stopped this ticket on the message decides the rest of it itself, unless a ticket handed it back.
       const stopped = decision?.kind === 'stop' && decision.ticketId === ticketId && !disposition?.handbacks?.length
       const decided = !!decision && (settled(decision) || stopped)
       if (!this.owners(trigger).length && !disposition?.acked?.length && !decided) this.queueForEval(trigger)

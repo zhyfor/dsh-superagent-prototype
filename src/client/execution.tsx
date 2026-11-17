@@ -77,9 +77,11 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), maxSteps: String(executor.maxSteps),
+    maxTokens: String(executor.maxTokens), blockedCommands: executor.blockedCommands.join(' ') }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), maxSteps: numberOf(value.maxSteps), maxTokens: numberOf(value.maxTokens),
+      blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const prepare = useRef<HTMLTextAreaElement>(null)
@@ -99,6 +101,14 @@ export function ExecutionSettings() {
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
+          </Field>
+          <Field label={t('maxSteps')} hint={t('maxStepsHint')}>
+            <Input type="number" min={LIMITS.maxSteps.min} max={LIMITS.maxSteps.max} required value={value.maxSteps}
+              onChange={event => edit({ maxSteps: event.target.value })} />
+          </Field>
+          <Field label={t('maxTokens')} hint={t('maxTokensHint')}>
+            <Input type="number" min={LIMITS.maxTokens.min} max={LIMITS.maxTokens.max} required value={value.maxTokens}
+              onChange={event => edit({ maxTokens: event.target.value })} />
           </Field>
         </div>
         <div className="dt-form dt-block">

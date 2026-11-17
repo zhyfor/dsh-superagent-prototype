@@ -178,7 +178,7 @@ it('leaves Feishu out of a GitHub-only deployment', async () => {
   at({ page: 'settings', query: { group: 'prompts' } })
   await mount()
   await click(tab(zh.promptViewFull))
-  expect([...field<HTMLSelectElement>(zh.promptPreviewTarget).options].map(option => option.textContent)).toEqual(['主 Session',
+  expect([...field<HTMLSelectElement>(zh.promptPreviewTarget).options].map(option => option.textContent)).toEqual(['需求评估',
     '执行器 Session', 'dsh-superagent-github'])
 })
 

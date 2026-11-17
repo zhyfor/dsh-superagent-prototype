@@ -6,7 +6,7 @@ import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
+import { runAsWorker, sameDirectory, withoutDirectory, workerBin, workerEnvironment } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -72,7 +72,8 @@ export type Probe = (argv: string[]) => Promise<string>
 /** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
 export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
-  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+  // Probe with the worker environment but without the shim directory, so a wrapper script resolves the real CLI.
+  return argv => runAsWorker(subprocess, argv, cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), workerEnvironment(stateDir, path, { PATH: path }))
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })

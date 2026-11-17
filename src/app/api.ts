@@ -14,7 +14,7 @@ export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as c
 export type TicketFilter = typeof TICKET_FILTERS[number]
 export type ThreadFilter = typeof THREAD_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
-/** Whether a context update was already injected into the main Session or is still pending delivery. */
+/** Whether a context update was already injected into the assessment Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
 
 export interface Api {

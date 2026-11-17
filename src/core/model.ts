@@ -45,13 +45,13 @@ export interface TriggerDisposition {
   evalId?: string
   decisionId?: string
   /**
-   * The tickets it reached, by subscription fan-out or attached by the main Session; a ticket that ended or could not resume
+   * The tickets it reached, by subscription fan-out or attached by the assessment Session; a ticket that ended or could not resume
    * without its worker taking it up no longer counts.
    */
   fanout: string[]
   /** The tickets of `fanout` it reached only on a Thread their Executor follows for context, which makes it none of theirs. */
   context?: string[]
-  /** A person, or the main Session for a message no ticket decides, sent it to Eval again; a hand-back does not set it. */
+  /** A person, or the assessment Session for a message no ticket decides, sent it to Eval again; a hand-back does not set it. */
   requeued?: true
   /** The tickets whose Executor handed it back as beyond the ticket, each once, with why; it goes to Eval once none decides it. */
   handbacks?: { ticketId: string; reason: string; at: string }[]
@@ -70,7 +70,7 @@ export interface FollowupRecords {
  * and did not hand it back. A ticket can while it is live, also once a person dropped its Subscription to the Thread, and
  * while it is ended, not by a person, with the Trigger waiting to resume it. None once a person sent it to Eval, or while
  * an Eval holds it, which an earlier version may have queued. While a ticket owns it, the message goes to no Eval, and the
- * main Session may only stop the work on it.
+ * assessment Session may only stop the work on it.
  */
 export function followupOwners(trigger: Pick<Trigger, 'id' | 'human' | 'threads'>, records: FollowupRecords): string[] {
   if (!trigger.human) return []
@@ -253,7 +253,7 @@ export type TicketInput =
   /** A human's message on one of its Threads resumed the ended ticket under its unchanged Mandate. */
   | { id: string; kind: 'resumed'; triggerId: string; at: string }
   | { id: string; kind: 'text'; text: string; at: string }
-  /** A fact the main Session gave the ticket from other work: context, which asks for nothing and grants nothing. */
+  /** A fact the assessment Session gave the ticket from other work: context, which asks for nothing and grants nothing. */
   | { id: string; kind: 'note'; text: string; at: string }
 
 /**
@@ -277,6 +277,8 @@ export interface Attention { id: string; question: string; triggerId?: string }
 export interface Ticket {
   id: string
   title: string
+  /** The short plan confirmed in the assessment, kept for later assignments. */
+  plan?: string
   decisionId: string
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
@@ -295,7 +297,7 @@ export interface Ticket {
    * `Tickets.unfinished`), and then its next `ready` or `dropped` report ends it.
    */
   follows?: Follow[]
-  /** People's questions the worker answered, whose answers the main Session may send. */
+  /** People's questions the worker answered, whose answers the assessment Session may send. */
   answers?: string[]
   createdAt: string
   updatedAt: string

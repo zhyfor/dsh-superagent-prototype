@@ -19,7 +19,7 @@ it('lists the team sections, then the built-in parts, edits and saves them separ
   await click(tab(zh.promptViewFull))
   // The full prompt shows every part, team or built in, as editable, in the order the Session reads them.
   const parts = all('.dt-preview-part').map(part => [part.querySelector('b')?.textContent, part.hasAttribute('data-editable')])
-  expect(parts.slice(0, 5)).toEqual([['共享约定', true], ['主 Session 角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
+  expect(parts.slice(0, 5)).toEqual([['共享约定', true], ['需求评估角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
   expect(text()).toContain('Custom communication rule')
   await click(all('.dt-preview-part').find(part => part.querySelector('b')?.textContent === '沟通方式')!.querySelector('button')!)
   await click(zh.promptResetSection)

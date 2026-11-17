@@ -9,6 +9,9 @@ import { join } from 'node:path'
 import { vi, type Mock } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { Runtime } from '../../src/app/runtime.ts'
+import { assessSessionId } from '../../src/app/session-policy.ts'
+
+declare module '../../src/app/runtime.ts' { interface Runtime { /** Test-only alias set by the fixture; production has no global Session. */ readonly masterId: string } }
 import { Store } from '../../src/app/store.ts'
 import { SettingsSchema } from '../../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../../src/sources/feishu.ts'
@@ -236,10 +239,14 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const reader = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
   const persistence = { flush: vi.fn(async () => {}), open: vi.fn(async () => reader) }
   const webServer = { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }
+  const connection = { requestRejection: () => undefined }
   const jobs = jobRegistry(id => agents.get(id))
   const subagents = subagentRuntime(agents)
+  const workspaceRegistry = { create: vi.fn(async (cwd: string, title?: string) => ({ id: cwd, title, setTitle: vi.fn(async () => {}),
+    attachSession: vi.fn(async () => {}) })), list: () => [], archivedSessionIds: [] as string[], archiveSession: vi.fn(async () => {}), delete: vi.fn(async () => {}) }
+  const workingDirectory = { get: vi.fn(() => ''), set: vi.fn(async (_agent: unknown, path: string) => path) }
   const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value) }, sessionController: controller,
-    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
+    sessionPersistence: persistence, workspaceRegistry, workingDirectory, permissionPresets: { set: () => {} }, subprocess, webServer, connection,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
@@ -251,6 +258,11 @@ export async function startRuntime(seed?: (store: Store) => void) {
   seeded.close()
   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
   await runtime.ready
+  // Test-only alias for the assessment Session most recently created in this fixture. Production has no global Session.
+  await runtime.sessions.assess('test:main')
+  const seededAssessor = assessSessionId('test:main')
+  Object.defineProperty(runtime, 'masterId', { get: () => deliveries.mock.calls.map(([call]) => call.sessionId).filter(id => id.startsWith('assess-')).at(-1)
+    ?? [...agents.keys()].filter(id => id.startsWith('assess-')).at(-1) ?? seededAssessor })
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
@@ -261,7 +273,10 @@ export async function startRuntime(seed?: (store: Store) => void) {
   /** Parsed JSON payloads delivered to `sessionId`. */
   const relays = (sessionId: string) => deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === sessionId)
     .map(call => JSON.parse(call.text) as Record<string, unknown>)
-  const candidates = () => relays(runtime.masterId).filter(item => item.kind === 'candidate').map(item => item.trigger_id)
+  // Candidate cards are addressed to each Thread's own assessment Session; the fixture aggregates them like the former global Session.
+  const candidates = () => deliveries.mock.calls.map(([call]) => {
+    try { return JSON.parse(call.text) as Record<string, unknown> } catch { return { text: call.text } as Record<string, unknown> }
+  }).filter(item => item.kind === 'candidate').map(item => item.trigger_id)
   const runTool = async (sessionId: string, name: string, args: unknown) => {
     const tool = tools.get(sessionId)?.get(name)
     if (!tool) throw new Error(`Tool ${name} is not registered for ${sessionId}`)

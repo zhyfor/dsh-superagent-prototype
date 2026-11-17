@@ -3,12 +3,26 @@ import { Config, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+type RuntimeProbe = {
+  machine: Machine
+  restart: () => void
+  ready: Promise<void>
+  settleReady: () => void
+  failReady: (error: Error) => void
+}
+const runtimes = vi.hoisted(() => [] as RuntimeProbe[])
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
-  ready = Promise.resolve()
-  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
+  ready: Promise<void>
+  private settle!: () => void
+  private fail!: (error: Error) => void
+  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) {
+    this.ready = new Promise<void>((resolve, reject) => { this.settle = resolve; this.fail = reject })
+    runtimes.push(this as RuntimeProbe)
+  }
   configured() { return true }
   async stop() {}
+  settleReady() { this.settle() }
+  failReady(error: Error) { this.fail(error) }
 } }))
 /** Simulate the Cordis loader updating a volatile configuration reference in place. */
 const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
@@ -24,6 +38,7 @@ function context() {
     fiber: { restart: vi.fn(async () => {}) },
     get: vi.fn((name: string) => name === 'settings' ? { describe } : undefined),
     logger: { info: vi.fn(), error: vi.fn() },
+    provide: vi.fn(() => () => {}),
   }
   return { ctx, handlers, configure, describe }
 }
@@ -52,6 +67,23 @@ it('asks DSH to read its settings entry again once a restart it started finished
   expect(describe).not.toHaveBeenCalled()
   finish()
   await vi.waitFor(() => { expect(describe).toHaveBeenCalledTimes(1) })
+})
+
+it('does not block Host row activation while runtime startup settles', async () => {
+  const { ctx } = context()
+  await expect(apply(ctx as never, Config({ stateDir: '/srv/state' }))).resolves.toBeUndefined()
+  const probe = runtimes.at(-1)!
+  probe.settleReady()
+  await vi.waitFor(() => { expect(ctx.logger.info).toHaveBeenCalledTimes(1) })
+})
+
+it('records a rejected runtime startup without failing Host row activation', async () => {
+  const { ctx } = context()
+  await expect(apply(ctx as never, Config({ stateDir: '/srv/state' }))).resolves.toBeUndefined()
+  runtimes.at(-1)!.failReady(new Error('boom'))
+  await vi.waitFor(() => {
+    expect(ctx.logger.error).toHaveBeenCalledWith('dsh-superagent failed to start: %s', 'Error: boom')
+  })
 })
 
 it('refuses keys of the previous configuration before registering anything', async () => {

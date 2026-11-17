@@ -1,4 +1,4 @@
-/** Main Session tools for routing triggers, assessing candidates, sending replies, and updating settings and prompts. */
+/** Assessment Session tools for routing triggers, assessing candidates, sending replies, and updating settings and prompts. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
@@ -29,7 +29,7 @@ export interface MainToolsHost {
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
-  /** Runs an Engine command initiated by the main Session without emitting self-notifications. */
+  /** Runs an Engine command initiated by the assessment Session without emitting self-notifications. */
   quietly<T>(run: () => T): T
 }
 /** Schedules an Engine pass to execute the recorded routing decision and formats the tool response. */
@@ -51,6 +51,7 @@ const RouteItemSchema = z.object({
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
+  plan: z.string().trim().nullish().describe('accept: the confirmed short plan: 目标、范围、改动位置、实施步骤、验收、回滚.'),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
@@ -63,6 +64,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   title: { check: z.string().max(200), reads: ['accept'], needs: ['accept'] },
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
+  plan: { check: z.string().max(4000), reads: ['accept'], needs: [] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
 }
@@ -95,7 +97,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...(item.plan ? { plan: item.plan } : {}), ...note })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -151,12 +153,12 @@ function routeTool(host: MainToolsHost): Tool {
     },
   })
 }
-/** Builds the main Session's tools; `agent` scopes prompt preview resources to that Session. */
+/** Builds the assessment Session's tools; `agent` scopes prompt preview resources to that Session. */
 export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
   const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
   return [
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
-      false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
+      false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, agent.id, signal)),
     routeTool(host),
     tool({
       name: 'orchestrator_ticket_retry',
@@ -257,7 +259,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         .refine(args => (args.block === 'source') === (args.source !== undefined), 'source names the Source instance, with block source only'),
       execute: async args => {
         if (args.block === 'pause') return host.settings.pause(z.object({ paused: z.boolean() }).parse(args.value).paused, 'tool')
-        // Strip context_delivery since the main Session initiated the save itself.
+        // Strip context_delivery since the assessment Session initiated the save itself.
         const { context_delivery: _delivery, ...saved } = await host.settings.save(args.block === 'source' ? `source:${args.source!}` : args.block,
           args.value, args.revision, 'tool')
         return saved

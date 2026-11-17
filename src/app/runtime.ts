@@ -13,17 +13,16 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, reasonText, threadKey, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
-import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { environmentOf, executionRoot, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
-import { KV } from '../kv.ts'
 import { Store } from './store.ts'
 import { evalsHealth } from './views/overview.ts'
 import { TextCache } from './cache.ts'
@@ -41,6 +40,7 @@ import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
 import { Sessions } from './sessions.ts'
+import { assessSessionId } from './session-policy.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
@@ -73,7 +73,6 @@ export class Runtime extends Service implements SourceHost {
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
-  readonly masterId: string
   private readonly sourceLinks = new TextCache(200_000)
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
@@ -101,8 +100,6 @@ export class Runtime extends Service implements SourceHost {
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const feishu = () => setup.configured() && !!setup.deployment.feishu
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
-      const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
-      store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
       const board = this.board
       const effects = this.effects = new Effects(store, board)
@@ -115,13 +112,14 @@ export class Runtime extends Service implements SourceHost {
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
-      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, context: ctx,
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
-      const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
-        lifetime: this.lifetime,
+      const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'),
+        workspacePath: this.machine.stateDir, lifetime: this.lifetime,
         closing: () => this.closing(), environment,
-        tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
+        tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent),
+        reconcileRoots: () => [this.machine.stateDir, executionRoot(store.settings(), this.machine.stateDir)] })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
@@ -130,20 +128,31 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
-        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+        deliver: async (id, text, thread) => { await sessions.assess(thread); await sessions.prompt(assessSessionId(thread), id, text, 'steer') },
+        candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
-          // Notify the main Session only about domain events it did not initiate itself.
+          // The assessment Session of the Thread an event concerns, never a global Session.
+          const threadOfTicket = (ticketId: string): string | undefined => {
+            const trigger = store.tickets.get(ticketId)?.origin.triggerId
+            const ref = trigger ? store.triggers.get(trigger)?.threads[0] : undefined
+            return ref ? threadKey(ref) : undefined
+          }
+          const targetThread = event.type === 'ticket.ended' ? threadOfTicket(event.data.ticketId)
+            : event.type === 'trigger.requeued' ? (() => { const ref = store.triggers.get(event.data.triggerId)?.threads[0]; return ref ? threadKey(ref) : undefined })()
+            // A person's unsubscribe concerns the Thread itself; an Executor's finding concerns the Ticket's own Thread.
+            : event.type === 'thread.unsubscribed' ? (event.data.by === 'executor' ? threadOfTicket(event.data.ticketId) : event.data.threadKey) : undefined
+          // Notify a Thread's assessment Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
-          if (notice) sessions.notify(...notice)
-          // A person's message that reached an open ticket is the ticket's; the main Session hears of it in the same transaction,
-          // and of one for an ended ticket once it resumes, unless it routed the message there itself.
+          if (notice) sessions.notify(...notice, targetThread)
+          // A person's message that reached an open ticket is the ticket's; its Thread's assessment Session hears of it in the same
+          // transaction, and of one for an ended ticket once it resumes, unless it routed the message there itself.
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
-          if (followup) sessions.relay(followup.id, followup.text)
+          if (followup) sessions.relay(followup.id, followup.text, followup.targetThread)
           // Notify the ticket's conversations whenever it ends via a pull request.
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
@@ -207,7 +216,7 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
-    await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    await this.sessions.reconcile()
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
@@ -218,8 +227,8 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks, setup, passes } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
@@ -231,7 +240,7 @@ export class Runtime extends Service implements SourceHost {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
-      const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
+      const ids = [...this.store.threads.list().map(thread => assessSessionId(thread.key)), ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
@@ -243,7 +252,6 @@ export class Runtime extends Service implements SourceHost {
       await this.ctx.sessionPersistence.flush()
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
-      this.setup.restore()
       try { this.store.close() } finally {
         const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
           String(error)) }

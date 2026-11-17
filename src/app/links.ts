@@ -1,4 +1,4 @@
-/** Source message link resolution and candidate card assembly for the main Session. */
+/** Source message link resolution and candidate card assembly for the assessment Session. */
 import type { Candidate, Ticket, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { readFeishuLink } from '../sources/feishu-read.ts'
@@ -51,7 +51,7 @@ function referencedTickets(host: LinkHost, trigger: Trigger, known: readonly Tic
   for (const ticket of known) ids.delete(ticket.id)
   return [...ids].flatMap(id => host.store.tickets.get(id) ?? []).slice(0, 4)
 }
-/** Builds the main Session's candidate card with routing metadata, handback history, and related or referenced tickets. */
+/** Builds the assessment Session's candidate card with routing metadata, handback history, and related or referenced tickets. */
 export async function candidateCard(host: LinkHost, candidate: Candidate) {
   const primary = candidate.triggers.at(-1)!
   const settings = host.store.settings()

@@ -62,7 +62,7 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   expect(all('.dt-list .dt-ticket .dt-stage').map(stage => stage.textContent)).toContain(zh.threadSubscribed)
   expect(all('.dt-list .dt-ticket .dt-stage').map(stage => stage.textContent)).not.toContain(zh.threadUnsubscribed)
   expect(all('.dt-status-line .dt-lv').map(item => item.textContent)).toEqual(['授权 明确', '发起 飞书 · Alice', expect.stringMatching(/^更新 /)])
-  for (const expected of ['修复登录页回归', '点名方式@ 智能体', '名单里的人明确请求，由主 Session 接单', '未送达：等待派工运行',
+  for (const expected of ['修复登录页回归', '点名方式@ 智能体', '名单里的人明确请求，由需求评估接单', '未送达：等待派工运行',
     'Alice：顺便改标题']) expect(text()).toContain(expected)
   expect(all('.dt-chip').map(chip => chip.textContent)).toContain('飞书团队群')
   await click(zh['term.channel'])

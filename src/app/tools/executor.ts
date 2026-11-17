@@ -6,13 +6,13 @@ import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
-import { reportRelay, threadFollowedNotice } from '../notices.ts'
+import { reportRelay, threadFollowedNotice, ticketThread } from '../notices.ts'
 import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
-  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
@@ -24,7 +24,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
   return [
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
-      true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
+      true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, `worker-${ticketId}`, signal)),
     tool({
       name: 'orchestrator_ack',
       description: 'Acknowledge one original human request before substantial work, as the replies section says; it posts as a reply to that message.',
@@ -58,7 +58,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         const at = args.thread.indexOf(':')
         if (at < 1 || at === args.thread.length - 1) throw new Error('A thread key is <source>:<id>, such as github:<number>')
         const followed = host.engine.followForContext(ticketId, { source: args.thread.slice(0, at), id: args.thread.slice(at + 1) })
-        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, args.thread, args.reason))
+        if (followed) host.sessions.notify(...threadFollowedNotice(ticketId, args.thread, args.reason), ticketThread(host.store, ticket))
         return { followed, thread: args.thread }
       }),
     }),
@@ -86,7 +86,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
         const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
-        // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
+        // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the assessment Session.
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)
           if (refused) throw new Error(refused)
@@ -94,8 +94,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}) }
           const updated = host.engine.report(ticketId, report)
-          const relay = reportRelay(updated, report)
-          if (relay) host.sessions.relay(relay.id, relay.text)
+          const relay = reportRelay(updated, report, ticketThread(host.store, updated))
+          if (relay) host.sessions.relay(relay.id, relay.text, relay.targetThread)
           const notification = relay ? 'orchestrator' : 'internal_only'
           return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }
         })

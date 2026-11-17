@@ -54,7 +54,7 @@ it('shows domain terms in the interface language only and lists both languages i
   // Terms are grouped the way the tabs follow the flow, after the roles that act in it.
   expect([...dialog.querySelectorAll('th.dt-glossary-group')].map(cell => cell.textContent)).toEqual(['Roles', 'Source', 'Trigger', 'Eval',
     'Execution'])
-  expect([...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Main Session'))!.textContent).toContain('prompts call it the orchestrator')
+  expect([...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Assessment Session'))!.textContent).toContain('called the orchestrator in prompts')
 })
 
 it('says dsh-superagent is not answering when its routes are gone, as while it restarts', async () => {

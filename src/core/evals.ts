@@ -22,7 +22,7 @@ const REQUEUES = 2
  * Evals runs the Evals of Threads: it batches a Thread's queued Triggers into one Eval, takes its strength, actor, and basis
  * from the gate, asks the assessor, keeps its deadline through a pause, and records the Decision it ends with: accept, stop,
  * ignore, or unavailable. It depends on Tickets to create the ticket an accept decides and to end the one a stop names; the
- * Engine routes the main Session's decisions, people's replays, worker handbacks, and the pass's Eval work here.
+ * Engine routes the assessment Session's decisions, people's replays, worker handbacks, and the pass's Eval work here.
  */
 export class Evals extends EnginePart {
   constructor(options: EngineOptions, private readonly tickets: Tickets) { super(options) }
@@ -144,7 +144,7 @@ export class Evals extends EnginePart {
       }
       return earlier
     }
-    // A follow-up that reached a ticket is its worker's to judge: the main Session may only stop the work on it.
+    // A follow-up that reached a ticket is its worker's to judge: the assessment Session may only stop the work on it.
     if (outcome.kind !== 'stop') this.leftToWorkers(trigger)
     const thread = held ?? this.thread(trigger.threads[0]!)
     const evaluation = held?.evaluating ?? this.directEval(thread, trigger, outcome.kind, outcome.kind === 'stop' ? outcome.ticketId : undefined)
