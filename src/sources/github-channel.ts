@@ -50,3 +50,19 @@ export function githubLink(address: Record<string, string>, links: ChannelLinks)
     label: review ? { zh: `GitHub #${number} 的 review 讨论`, en: `Review discussion on GitHub #${number}` }
       : { zh: `GitHub #${number}`, en: `GitHub #${number}` } }
 }
+/** Minimal issue payload used by the Feishu-to-Issue bridge. */
+export interface GithubIssueDraft { title: string; body: string; labels: string[]; assignees: string[] }
+export interface GithubIssueLink { number: number; url: string; title: string }
+const CreatedIssueSchema = z.object({ number: z.number(), html_url: z.string(), title: z.string() })
+/** Creates an issue in an explicitly named repository (the task ledger is not necessarily the configured repository). */
+export async function createGithubIssue(host: Pick<SourceContext, 'commands'>, repository: string, draft: GithubIssueDraft): Promise<GithubIssueLink> {
+  const args = ['api', `repos/${repository}/issues`, '--method', 'POST', '-f', `title=${draft.title}`, '-f', `body=${draft.body}`]
+  for (const label of draft.labels) args.push('-f', `labels[]=${label}`)
+  for (const assignee of draft.assignees) args.push('-f', `assignees[]=${assignee}`)
+  const created = CreatedIssueSchema.parse(await host.commands.gh<unknown>(args))
+  return { number: created.number, url: created.html_url, title: created.title }
+}
+/** Appends a comment to an existing task issue, used when a Feishu topic already has a ledger entry. */
+export async function appendGithubIssue(host: Pick<SourceContext, 'commands'>, repository: string, number: number, body: string): Promise<void> {
+  await host.commands.gh(['api', `repos/${repository}/issues/${number}/comments`, '--method', 'POST', '-f', `body=${body}`])
+}
