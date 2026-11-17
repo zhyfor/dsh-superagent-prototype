@@ -30,6 +30,12 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
 
+## Feishu `/ok`
+
+A person can send `/ok` (case-insensitive, on its own line) in a Feishu topic or direct message to finish the work there:
+open Tickets on that thread are stopped as `humanOk`, their worker Session titles are restored, and worker and
+assessment Sessions are archived. The message is a control message; it never enters Engine intake or starts a model turn.
+
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build.

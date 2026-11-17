@@ -190,6 +190,28 @@ export class Sessions {
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
   }
+
+  /** Restores a Session title after a person stops its ticket; a missing live Session never fails the stop. */
+  async rename(id: string, title: string): Promise<void> {
+    try {
+      await this.ctx.sessionController.rename({ sessionId: id as SessionId, title })
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not rename Session %s: %s', id, String(error))
+    }
+  }
+
+  /** Archives one Session with activity stopped; already archived and missing Sessions are treated as success. */
+  async archive(id: string): Promise<void> {
+    const registry = this.ctx.workspaceRegistry
+    if (typeof registry.archiveSession !== 'function') return
+    if (registry.archivedSessionIds.includes(id as SessionId)) return
+    try {
+      await registry.archiveSession(id as SessionId, { stopActivity: true })
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not archive Session %s: %s', id, String(error))
+    }
+  }
+
   /** Resolves or creates the assessment Session for `thread`, titled for the Thread and reused across its messages. */
   async assess(thread: string): Promise<Agent> {
     return this.ensure(assessSessionId(thread), this.host.workspacePath, `需求评估 ${thread}`, 'assessor')

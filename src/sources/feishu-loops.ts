@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { threadKey, type Thread, type Trigger } from '../core/index.ts'
+import { key, threadKey, type Thread, type Trigger } from '../core/index.ts'
 import { feishuChatLink } from './feishu-channel.ts'
 import type { FeishuBot } from '../deployment.ts'
 import { validItems, type Tally } from '../infra/commands.ts'
@@ -15,6 +15,8 @@ import { handleFeishuIssue } from './feishu-issue.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
+import { workerSessionId } from '../executor/dsh.ts'
+import { assessSessionId } from '../app/session-policy.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
@@ -24,7 +26,38 @@ const bot = (ctx: SourceContext): FeishuBot => {
   if (!resolved) throw new Error('The Feishu Source has no working bot CLI')
   return resolved
 }
-async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
+const OK = /^\/ok$/iu
+
+/** A person's `/ok` is a control message: it stops current tickets and never enters Engine intake. */
+export const isFeishuOk = (trigger: Trigger): boolean => trigger.human && OK.test(trigger.text.trim())
+
+/**
+ * Feishu `/ok`: stops every open ticket on this thread, restores its worker Session title, archives worker and
+ * assessment Sessions, and replies on the thread. The message never becomes a Trigger for the Engine.
+ */
+export async function handleFeishuOk(ctx: SourceContext, trigger: Trigger): Promise<void> {
+  const current = new Set(trigger.threads.map(threadKey))
+  const tickets = ctx.tickets.open().filter(ticket => {
+    const origin = ctx.triggers.get(ticket.origin.triggerId)
+    return Boolean(origin && origin.threads.some(ref => current.has(threadKey(ref))))
+  })
+  const threads = new Set(current)
+  for (const ticket of tickets) {
+    ctx.tickets.stop(ticket.id, 'humanOk')
+    const worker = workerSessionId(ticket.id)
+    await ctx.sessions.rename(worker, ticket.title)
+    await ctx.sessions.archive(worker)
+    for (const ref of ctx.triggers.get(ticket.origin.triggerId)?.threads ?? []) threads.add(threadKey(ref))
+  }
+  for (const thread of threads) await ctx.sessions.archive(assessSessionId(thread))
+  if (trigger.channel) {
+    ctx.notify({ id: key('feishu-ok', trigger.id), channel: trigger.channel, kind: 'reply',
+      text: tickets.length ? `已结束 ${tickets.length} 个进行中的任务，并关闭对应会话。` : '当前没有进行中的任务。' })
+  }
+}
+
+export async function receiveFeishu(ctx: SourceContext, trigger: Trigger): Promise<void> {
+  if (isFeishuOk(trigger)) { await handleFeishuOk(ctx, trigger); return }
   if (await handleFeishuIssue(ctx, trigger)) return
   await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
@@ -97,7 +130,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       const chats = ctx.state.get(KV.feishu.chats) ?? {}
       chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
       ctx.state.set(KV.feishu.chats, chats)
-      await receive(ctx, trigger)
+      await receiveFeishu(ctx, trigger)
     }).catch(error => { fail(String(error)) })
   })
   try {
@@ -190,7 +223,7 @@ export async function backfillChat(ctx: SourceContext, chatId: string, direct: b
         const at = feishuTime(message.create_time)
         if (message.thread_id && !(Date.parse(topics[message.thread_id] ?? '') >= Date.parse(at))) topics[message.thread_id] = at
         const trigger = feishuTrigger(historyEvent(message, chatId, direct), bot(ctx).botId, bot(ctx).appId)
-        if (trigger) await receive(ctx, trigger)
+        if (trigger) await receiveFeishu(ctx, trigger)
       }
       const stuck = result.has_more && (!result.page_token || pages.has(result.page_token))
       if (stuck) throw new Error('Feishu history pagination did not advance')
@@ -261,7 +294,7 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
       const trigger = feishuTrigger(topicEvent(message, ref.chatId, direct, root), botId, appId)
       // Ignore messages older than the thread subscription on initial poll.
       if (!trigger || (!initialized && Date.parse(trigger.at) < since)) continue
-      await receive(ctx, trigger)
+      await receiveFeishu(ctx, trigger)
     }
     result.messages.forEach(message => known.add(message.message_id))
     ctx.state.set(checkpoint, [...known])
