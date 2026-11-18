@@ -58,6 +58,14 @@ export interface SourceContext {
     bindThread(id: string, thread: ThreadRef, own: boolean): void
     /** Reports that a followed Thread closed at `at`; each open ticket following it ends once no `own` Thread remains open and no resumed work is still running. */
     threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void
+    /** Stops an open ticket on behalf of a person; already-ended tickets are left unchanged. */
+    stop(id: string, reason?: string): void
+  }
+  sessions: {
+    /** Restores a Session title; a missing live Session is logged and skipped. */
+    rename(id: string, title: string): Promise<void>
+    /** Archives a Session with activity stopped; an already archived Session is a success. */
+    archive(id: string): Promise<void>
   }
   triggers: { get(id: string): Trigger | undefined; /** The newest Trigger on a Thread. */ latest(thread: string): Trigger | undefined }
   notify(message: OutboundMessage): void

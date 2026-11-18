@@ -11,7 +11,7 @@ import type { Store } from './store.ts'
 export interface SourceContextDeps {
   readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read'>
   readonly outbox: Pick<Outbox, 'send'>
-  readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed'>
+  readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed' | 'stopTicket'>
   readonly commands: Commands
   readonly sources: SourceRegistry
   /** Throws when accessed before initial setup completes. */
@@ -24,6 +24,11 @@ export interface SourceContextDeps {
   readonly feishuProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
+  /** Session title/archive operations exposed to Sources without leaking the full Sessions service. */
+  readonly sessions?: {
+    rename(id: string, title: string): Promise<void>
+    archive(id: string): Promise<void>
+  }
 }
 
 /**
@@ -61,6 +66,11 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       open: () => store.tickets.open(),
       bindThread: (id, thread, own) => { deps.engine.bindThread(id, thread, own) },
       threadClosed: (thread, outcome, at) => { deps.engine.threadClosed(thread, outcome, at) },
+      stop: (id, reason) => { deps.engine.stopTicket(id, reason) },
+    },
+    sessions: {
+      rename: async (id, title) => { await deps.sessions?.rename(id, title) },
+      archive: async id => { await deps.sessions?.archive(id) },
     },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
     notify: message => { deps.outbox.send(message) },

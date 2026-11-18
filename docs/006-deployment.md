@@ -272,3 +272,11 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | The log says the plugin is incompatible with the running dsh | Install a DeepSeek Harness version within the `engines.dsh` range |
 | The panel shows "Failed to load plugins" after a DeepSeek Harness upgrade | Restart the running instance |
 | Nothing happens after a mention | Check that the author is on the Source's allowed list, the Source is on, and processing is not paused. On GitHub, a mention added by editing an Issue's body is not received; mention the agent in a comment |
+
+## Ending Feishu work with `/ok`
+
+In an allowed Feishu topic or direct message, a person sends `/ok` as its own message to end the work:
+open Tickets whose originating Trigger belongs to that thread are stopped as `humanOk`, their worker Session titles are
+restored, and the worker and assessment Sessions are archived. The message never enters Engine intake and does not
+start a model turn. The bot replies with a short confirmation; when nothing is running it says so and still archives the
+thread's assessment Session.

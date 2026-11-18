@@ -414,6 +414,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/issue-menu.spec.ts` | Feishu `/issue` and menu choices: dedupe to one ledger Issue, append to an existing Issue, secret stripping, and permission failure reporting |
+| `tests/todo-ok.spec.ts` | Feishu `/ok`: human-only command recognition, Ticket stop, worker title restore, worker/assessment archival, replies, and no Engine intake |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
