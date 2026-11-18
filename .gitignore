@@ -3,3 +3,7 @@ lib/
 .artifacts/
 .env
 coverage/
+
+# 本地配置备份（手工改名生成，不入库）
+*.bak
+*.bak.*
