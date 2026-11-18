@@ -32,9 +32,13 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 ## Feishu `/ok`
 
-A person can send `/ok` (case-insensitive, on its own line) in a Feishu topic or direct message to finish the work there:
-open Tickets on that thread are stopped as `humanOk`, their worker Session titles are restored, and worker and
-assessment Sessions are archived. The message is a control message; it never enters Engine intake or starts a model turn.
+A person can send `/ok` (case-insensitive, on its own line) in a Feishu topic or direct message to clear the TODO
+marker there: the titles of open Tickets' worker Sessions are restored, while the Tickets keep running and no Session is
+archived. The message is a control message; it never enters Engine intake or starts a model turn.
+
+Archiving a Session by hand from the Session list stops the open Tickets tied to it: archiving `worker-<ticket id>` stops
+that Ticket, and archiving `assess-<thread hash>` stops the open Tickets on its Thread. The end's reason is `humanArchive`,
+shown as 「会话已归档」.
 
 ## Development
 

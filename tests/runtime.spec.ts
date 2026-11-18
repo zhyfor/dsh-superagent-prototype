@@ -1867,3 +1867,24 @@ it('archives only orphan Sessions inside the managed workspace roots at reconcil
   expect(workspaceRegistry.archiveSession).not.toHaveBeenCalledWith(assessor, expect.anything())
   expect(workspaceRegistry.archiveSession).not.toHaveBeenCalledWith('session-user', expect.anything())
 })
+
+it('stops a still-open Ticket when its worker Session is manually archived', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  workspaceRegistry.archivedSessionIds.push(sessionId)
+  runtime.sessions.stopArchivedTickets()
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toEqual(expect.objectContaining({
+    by: 'human', outcome: 'stopped', reason: 'humanArchive',
+  }))
+  // A second scan has no still-open Ticket to stop.
+  runtime.sessions.stopArchivedTickets()
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toEqual(expect.objectContaining({ outcome: 'stopped' }))
+})
+
+it('stops open Tickets on a Thread when its assessment Session is manually archived', async () => {
+  const { ticket, trigger } = await acceptedTicket()
+  workspaceRegistry.archivedSessionIds.push(assessSessionId(threadKey(trigger.threads[0]!)))
+  runtime.sessions.stopArchivedTickets()
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toEqual(expect.objectContaining({
+    by: 'human', outcome: 'stopped', reason: 'humanArchive',
+  }))
+})

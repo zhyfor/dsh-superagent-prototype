@@ -613,6 +613,7 @@ const TEXT = {
   'reason.stopped': ['人工停止', 'Stopped by a human'],
   'reason.revoked': ['授权已失效', 'Mandate no longer valid'],
   'reason.humanStop': ['有人要求停止', 'Someone asked to stop'],
+  'reason.humanArchive': ['会话已归档', 'Session archived'],
   'reason.forwarded': ['已扇出给该线程的工单', 'Fanned out to the Thread\'s Ticket'],
   'reason.senderNotMember': ['发送者不在这个来源的名单里', 'Sender is not on this Source\'s list'],
   'reason.source_disabled': ['来源已停用', 'Source disabled'],

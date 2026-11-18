@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import { assessSessionId } from '../src/app/session-policy.ts'
 import { handleFeishuOk, isFeishuOk, receiveFeishu } from '../src/sources/feishu-loops.ts'
 import type { Ticket, Trigger } from '../src/core/index.ts'
 import type { SourceContext } from '../src/sources/host.ts'
@@ -39,7 +38,7 @@ describe('Feishu /ok', () => {
     expect(isFeishuOk(trigger('/ok please'))).toBe(false)
   })
 
-  it('stops matching tickets, restores worker titles, archives worker and assess sessions, then replies', async () => {
+  it('restores matching worker titles without stopping tickets or archiving sessions', async () => {
     const first = ticket('ticket-1', '修复登录', 'trigger-1')
     const second = ticket('ticket-2', '补充测试', 'trigger-2')
     const ctx = context([first, second], {
@@ -49,16 +48,14 @@ describe('Feishu /ok', () => {
 
     await handleFeishuOk(ctx, trigger('/ok'))
 
-    expect(ctx.tickets.stop.mock.calls).toEqual([['ticket-1', 'humanOk'], ['ticket-2', 'humanOk']])
+    expect(ctx.tickets.stop).not.toHaveBeenCalled()
     expect(ctx.sessions.rename.mock.calls).toEqual([['worker-ticket-1', '修复登录'], ['worker-ticket-2', '补充测试']])
-    expect(ctx.sessions.archive.mock.calls).toEqual([
-      ['worker-ticket-1'], ['worker-ticket-2'], [assessSessionId('feishu:topic-1')],
-    ])
-    expect(ctx.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'reply', text: expect.stringContaining('2 个') }))
+    expect(ctx.sessions.archive).not.toHaveBeenCalled()
+    expect(ctx.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'reply', text: '已清除 2 个会话的 TODO 标记；任务保持进行中。' }))
     expect(ctx.receive).not.toHaveBeenCalled()
   })
 
-  it('replies without stopping anything when no ticket matches the thread', async () => {
+  it('replies without renaming anything when no ticket matches the thread', async () => {
     const ctx = context([ticket('ticket-1', '其它话题', 'trigger-other')], {
       'trigger-other': { ...trigger('其它'), threads: [{ source: 'feishu', id: 'topic-other' }] },
     })
@@ -67,8 +64,8 @@ describe('Feishu /ok', () => {
 
     expect(ctx.tickets.stop).not.toHaveBeenCalled()
     expect(ctx.sessions.rename).not.toHaveBeenCalled()
-    expect(ctx.sessions.archive.mock.calls).toEqual([[assessSessionId('feishu:topic-1')]])
-    expect(ctx.notify).toHaveBeenCalledWith(expect.objectContaining({ text: '当前没有进行中的任务。' }))
+    expect(ctx.sessions.archive).not.toHaveBeenCalled()
+    expect(ctx.notify).toHaveBeenCalledWith(expect.objectContaining({ text: '当前没有可清除的 TODO 标记。' }))
   })
 
   it('never forwards /ok to Engine intake but forwards ordinary text', async () => {

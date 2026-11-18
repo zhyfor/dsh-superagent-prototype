@@ -16,7 +16,6 @@ import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
 import { workerSessionId } from '../executor/dsh.ts'
-import { assessSessionId } from '../app/session-policy.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
@@ -28,12 +27,12 @@ const bot = (ctx: SourceContext): FeishuBot => {
 }
 const OK = /^\/ok$/iu
 
-/** A person's `/ok` is a control message: it stops current tickets and never enters Engine intake. */
+/** A person's `/ok` is a control message: it clears TODO titles and never enters Engine intake. */
 export const isFeishuOk = (trigger: Trigger): boolean => trigger.human && OK.test(trigger.text.trim())
 
 /**
- * Feishu `/ok`: stops every open ticket on this thread, restores its worker Session title, archives worker and
- * assessment Sessions, and replies on the thread. The message never becomes a Trigger for the Engine.
+ * Feishu `/ok`: restores the title of every open ticket's worker Session on this thread without stopping the ticket
+ * or archiving any Session, then replies on the thread. The message never becomes a Trigger for the Engine.
  */
 export async function handleFeishuOk(ctx: SourceContext, trigger: Trigger): Promise<void> {
   const current = new Set(trigger.threads.map(threadKey))
@@ -41,18 +40,10 @@ export async function handleFeishuOk(ctx: SourceContext, trigger: Trigger): Prom
     const origin = ctx.triggers.get(ticket.origin.triggerId)
     return Boolean(origin && origin.threads.some(ref => current.has(threadKey(ref))))
   })
-  const threads = new Set(current)
-  for (const ticket of tickets) {
-    ctx.tickets.stop(ticket.id, 'humanOk')
-    const worker = workerSessionId(ticket.id)
-    await ctx.sessions.rename(worker, ticket.title)
-    await ctx.sessions.archive(worker)
-    for (const ref of ctx.triggers.get(ticket.origin.triggerId)?.threads ?? []) threads.add(threadKey(ref))
-  }
-  for (const thread of threads) await ctx.sessions.archive(assessSessionId(thread))
+  for (const ticket of tickets) await ctx.sessions.rename(workerSessionId(ticket.id), ticket.title)
   if (trigger.channel) {
     ctx.notify({ id: key('feishu-ok', trigger.id), channel: trigger.channel, kind: 'reply',
-      text: tickets.length ? `已结束 ${tickets.length} 个进行中的任务，并关闭对应会话。` : '当前没有进行中的任务。' })
+      text: tickets.length ? `已清除 ${tickets.length} 个会话的 TODO 标记；任务保持进行中。` : '当前没有可清除的 TODO 标记。' })
   }
 }
 

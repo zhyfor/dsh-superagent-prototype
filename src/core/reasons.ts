@@ -12,6 +12,7 @@ export const REASONS = {
   routed: 'Routed to ticket {ticket}',
   explicitRouted: 'Explicit request from an allowed sender routed by the orchestrator',
   humanStop: 'Human asked to stop',
+  humanArchive: 'Session archived by a person',
   legacyImport: 'Imported from the pre-domain-model task record',
   forwarded: 'Forwarded to the worker of the Ticket already on this Thread',
   senderNotMember: 'The sender is not on the Source\'s list',

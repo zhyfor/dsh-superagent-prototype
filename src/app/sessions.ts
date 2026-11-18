@@ -6,8 +6,8 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
-import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { key, liveTicket, threadKey, type Ticket } from '../core/index.ts'
+import { mandateInstructions, ticketOfSession, workerSessionId } from '../executor/dsh.ts'
 import { assessSessionId, isAssessSession, managedSessionIds, withinAnyRoot } from './session-policy.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
@@ -25,7 +25,7 @@ import type { RegisterTool, Tool } from './tools/tool.ts'
 export interface SessionsHost {
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
-  readonly store: Pick<Store, 'tickets' | 'threads' | 'settings' | 'get' | 'set' | 'keys'>
+  readonly store: Pick<Store, 'tickets' | 'threads' | 'triggers' | 'settings' | 'get' | 'set' | 'keys'>
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'compose' | 'skills'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'idle' | 'pending'>
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
@@ -40,6 +40,8 @@ export interface SessionsHost {
   tools(agent: Agent, ticket?: Ticket): Tool[]
   /** Roots whose workspaces and Sessions dsh-superagent owns; only Sessions outside the valid set are archived. */
   reconcileRoots(): readonly string[]
+  /** Stops a still-open Ticket after a person archived a Session tied to it, with `reason` as the end's reason code. */
+  stopTicket(ticketId: string, reason: string): void
 }
 
 /**
@@ -135,6 +137,8 @@ export class Sessions {
       this.retryHealth.observe(agent.id, event)
       this.updateModelHealth()
     })
+    // A manual archive stops the Session; a still-open Ticket tied to it must not keep running.
+    ctx.on('workspace/session-stop', () => { this.stopArchivedTickets() })
     ctx.on('agent/created', async ({ agent }) => { await this.decorate(agent); return undefined })
     // Opening a Session in DSH's Web UI before its first turn may select the default preset for it: select ours again. After
     // its first turn DSH refuses any selection, which leaves it as it is.
@@ -210,6 +214,26 @@ export class Sessions {
     } catch (error) {
       this.ctx.logger.warn('dsh-superagent could not archive Session %s: %s', id, String(error))
     }
+  }
+
+  /**
+   * Stops still-open Tickets whose worker Session was manually archived, or whose Thread's assessment Session was
+   * archived. Archived ids are DSH's durable archive set, so this scan is idempotent and safe to run every pass.
+   */
+  stopArchivedTickets(): void {
+    const registry = this.ctx.workspaceRegistry
+    if (!Array.isArray(registry.archivedSessionIds)) return
+    const archived = new Set<string>(registry.archivedSessionIds)
+    let stopped = 0
+    for (const ticket of this.host.store.tickets.open()) {
+      const workerArchived = archived.has(workerSessionId(ticket.id))
+      const origin = workerArchived ? undefined : this.host.store.triggers.get(ticket.origin.triggerId)
+      const assessArchived = Boolean(origin?.threads.some(ref => archived.has(assessSessionId(threadKey(ref)))))
+      if (!workerArchived && !assessArchived) continue
+      this.host.stopTicket(ticket.id, 'humanArchive')
+      stopped++
+    }
+    if (stopped) this.ctx.logger.info('dsh-superagent stopped %d Ticket(s) after their Session was archived', stopped)
   }
 
   /** Resolves or creates the assessment Session for `thread`, titled for the Thread and reused across its messages. */

@@ -10,6 +10,8 @@ export interface PassesHost {
   readonly lifetime: AbortSignal
   configured(): boolean
   closing(): boolean
+  /** Stop Tickets whose Sessions a person archived; runs every pass in case the archive event was missed. */
+  stopArchivedTickets?(): void
 }
 
 const now = (): string => new Date().toISOString()
@@ -61,6 +63,7 @@ export class Passes {
     return this.pumpAgain ??= this.pumping.then(next, next)
   }
   private async pumpOnce(): Promise<void> {
+    this.host.stopArchivedTickets?.()
     this.host.effects.kick()
     if (this.host.closing()) return
     // While processing is paused, the Engine only records the pause on active Evals so they do not expire.
