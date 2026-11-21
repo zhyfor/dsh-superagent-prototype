@@ -221,6 +221,11 @@ function match(table: Routes, method: string, segments: string[]) {
   }
   return undefined
 }
+/** A peer on this machine: the idle-time gate and other local maintenance jobs call the API without a browser. */
+function isLoopback(req: IncomingMessage): boolean {
+  const address = req.socket?.remoteAddress
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
 export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   const table = routes(runtime)
   const disposers = [
@@ -229,7 +234,11 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
       if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
       // DSH Connection owns the Host/Origin fence and browser/API authentication, including Tailnet Serve and other
       // configured public origins. The extra header keeps ordinary cross-site form posts out even when a cookie is present.
-      const rejection = (ctx as unknown as { connection: { requestRejection(request: { headers: typeof req.headers }): 401 | 403 | undefined } }).connection.requestRejection(req)
+      // A loopback peer is this machine's operator: when the panel shares a Host that also serves a public origin, local
+      // jobs still have no browser session, so only remote peers pass the auth fence. The header above stays mandatory,
+      // and browsers cannot set it cross-site, so no page can reach the loopback exemption.
+      const rejection = isLoopback(req) ? undefined
+        : (ctx as unknown as { connection: { requestRejection(request: { headers: typeof req.headers }): 401 | 403 | undefined } }).connection.requestRejection(req)
       if (rejection !== undefined) {
         json(res, rejection, { error: rejection === 401 ? 'Authentication required' : 'Same-origin management request required' })
         return

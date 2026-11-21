@@ -10,7 +10,7 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1', peer?: string) {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } },
     // Mirrors DSH Connection: trusted Host/Origin first, then browser authentication.
@@ -26,7 +26,7 @@ function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
     const sent = Object.fromEntries(Object.entries({ host: '127.0.0.1:3082', 'x-orchestrator-request': '1', 'x-authenticated': '1', ...headers }).filter(([,
       value]) => value !== undefined))
-    const req = { method, url: `/orchestrator/api/${path}`, headers: sent, async *[Symbol.asyncIterator]() { yield* chunks } }
+    const req = { method, url: `/orchestrator/api/${path}`, headers: sent, ...(peer === undefined ? {} : { socket: { remoteAddress: peer } }), async *[Symbol.asyncIterator]() { yield* chunks } }
     await handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
@@ -87,6 +87,18 @@ it('delegates Host/Origin and authentication to DSH Connection, and still requir
   // A Tailnet Serve authority accepted by Connection is admitted too, and the Web server no longer has to bind loopback.
   expect(await post({ host: 'zh.tailnet.ts.net', origin: 'http://zh.tailnet.ts.net' })).toMatchObject({ status: 200 })
   expect(() => serve({}, '0.0.0.0')).not.toThrow()
+})
+
+it('exempts a loopback peer from the browser session while a remote peer still needs one', async () => {
+  const runtime = { sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } }
+  const local = serve(runtime, '127.0.0.1', '::ffff:127.0.0.1')
+  expect(await local('POST', 'threads/github%3A1/unsubscribe', undefined, { 'x-authenticated': '0' })).toMatchObject({ status: 200 })
+  const remote = serve(runtime, '127.0.0.1', '192.168.31.9')
+  expect(await remote('POST', 'threads/github%3A1/unsubscribe', undefined, { 'x-authenticated': '0' }))
+    .toMatchObject({ status: 401, body: { error: 'Authentication required' } })
+  // The exemption never replaces the panel header: browsers cannot set it cross-site.
+  expect(await local('POST', 'threads/github%3A1/unsubscribe', undefined, { 'x-orchestrator-request': undefined }))
+    .toMatchObject({ status: 403 })
 })
 
 it('answers a prompt save that lost a race with 409, and a settings body over 128 KiB with 400', async () => {
