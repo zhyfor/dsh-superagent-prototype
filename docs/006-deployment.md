@@ -86,9 +86,22 @@ The fourth command creates `~/.dsh/profiles/superagent` from the DeepSeek Harnes
 
 Run the profile-creation command only for a new installation. If the profile already exists, that command replaces it and deletes its `cordis.patch.yml`, including machine configuration. Do not use it for upgrades.
 
+### Install into a profile you already work in
+
+To serve the panel from the profile you use every day, add the bundle to that profile instead of creating `superagent`:
+
+```sh
+dsh plugin --profile <profile> add "link:$PWD"
+dsh plugin --profile <profile> install
+```
+
+`add` writes the dependency but does not append the bundle to `dsh.profile.bundles`, the list of what a profile loads. Add `dsh-superagent`, and `dsh-superagent-feishu` for Feishu, to that list by hand after the entries they build on, then run `install` again so a later `add` cannot leave a stale link behind. A bundle missing from the list is skipped: the log says `skipping profile bundle "dsh-superagent"` and the panel never appears.
+
+Keep the machine configuration below in that profile's `cordis.patch.yml`. Two Hosts must never load the same `stateDir`, because only one takes its lock: stop the `superagent` service before the profile you work in loads the bundle, and keep it stopped while that profile serves the panel.
+
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. When the bundle runs in the profile you work in, use that profile's `cordis.patch.yml` instead; the entries are the same, and `webserver`, if the file sets one, must follow the Host that serves it. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -160,7 +173,7 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.
 
-Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403.
+Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403. A peer on this machine needs no browser session, even when the Host also serves a public origin, so a local job such as a time of day gate can pause processing without one; requests from another address pass the Host's Host/Origin fence and its login.
 
 API saves have the panel's permissions. They can change execution environment and setup account fields, unlike saves made through the assessment Session's tools.
 
@@ -268,6 +281,8 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `status` exits 1 | The service does not run, runs twice, does not answer, or its runtime reports an error; the output and the newest log say which |
 | `… timed out after 90 s`, `… was stopped by …`, `… exited with code …` or `… could not run: …` | A CLI failed without printing why; run the named program by hand as the operator's user to see its own message |
 | The panel says dsh-superagent is not answering | It is restarting, or did not start because of its configuration; the DeepSeek Harness log names the cause |
+| A local script receives `401` with `Authentication required` | The panel runs in a Host that also serves a public origin, and this dsh-superagent lacks the loopback exemption; update it, or send the request with that Host's session |
+| GitHub or Feishu calls fail with `fetch failed` while a proxy is set | Node's built-in `fetch` ignores `HTTP(S)_PROXY` unless the service sets `NODE_USE_ENV_PROXY=1`; add it to the Host's environment and restart |
 | `dsh-superagent configuration has keys it does not use` (log) | Remove the named keys; the message says where each value lives now |
 | The log says the plugin is incompatible with the running dsh | Install a DeepSeek Harness version within the `engines.dsh` range |
 | The panel shows "Failed to load plugins" after a DeepSeek Harness upgrade | Restart the running instance |
